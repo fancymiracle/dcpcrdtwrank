@@ -383,7 +383,8 @@ function render() {
   const shown = renderBody(list);
 
   el('note').textContent = list.length > shown ? `只顯示前 ${shown} 筆，請用搜尋縮小範圍。` : '';
-  el('meta').textContent = `資料更新於 ${fmtTime(Date.parse(d.builtAt) / 1000)}`;
+  // 顯示資料的收集時間，不是打包時間
+  el('meta').textContent = `資料更新於 ${fmtTime(Date.parse(d.collectedAt ?? d.builtAt) / 1000)}`;
 
   el('stats').innerHTML = '';
   const stat = (label, value) => {
