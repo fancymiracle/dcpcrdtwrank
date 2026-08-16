@@ -155,7 +155,12 @@ const COLS = [
   { key: '_no', label: '#', def: true, fixed: true, cls: 'rk', sortable: false },
   { key: 'id', label: 'ID', def: true, cls: 'id', get: p => p.id },
   { key: 'name', label: '暱稱', def: true, cls: 'l nm', text: true, get: p => p.name },
-  { key: 'clan', label: '戰隊', def: true, cls: 'l cl', text: true, get: p => p.clan },
+  // 顯示「隊名 #排名」，排序也用排名（名次越小越前面）而不是字母序
+  {
+    key: 'clan', label: '戰隊', def: true, cls: 'l cl', text: true, rankLike: true,
+    get: p => p.clanRank ?? Infinity,
+    render: p => p.clanRank ? `${p.clan} #${p.clanRank}` : p.clan
+  },
   { key: 'power', label: '戰力', def: true, cls: 'pw', desc: true, get: p => p.power, render: p => fmtNum(p.power) },
   { key: 'lv', label: '等級', def: true, desc: true, get: p => p.lv },
   // 顯示等級，但排序用背後的原始經驗值 —— 同一級常擠著幾十人，
@@ -174,7 +179,7 @@ const COLS = [
 
 const COLS_KEY = 'heroBoard.columns';
 const state = {
-  server: null, sort: 'power', desc: true, q: '', clan: '',
+  server: null, sort: 'pk', desc: true, q: '', clan: '',
   visible: new Set(COLS.filter(c => c.def).map(c => c.key))
 };
 
@@ -229,7 +234,7 @@ function rows() {
     (p.comment || '').toLowerCase().includes(q) ||
     String(p.id).includes(q));
 
-  const col = COLS.find(c => c.key === state.sort) || COLS.find(c => c.key === 'power');
+  const col = COLS.find(c => c.key === state.sort) || COLS.find(c => c.key === 'pk');
   const dir = state.desc ? -1 : 1;
   return [...list].sort((a, b) => {
     let x = col.get(a), y = col.get(b);
@@ -286,8 +291,9 @@ function renderBody(list) {
         // 長名字靠內層 span 截斷，td 的 max-width 在 auto layout 下無效
         const span = document.createElement('span');
         span.className = 'clip';
-        span.textContent = c.get(p) || '';
-        span.title = c.get(p) || '';
+        const shown = (c.render ? c.render(p) : c.get(p)) || '';
+        span.textContent = shown;
+        span.title = shown;
         // 已離開前 50 名戰隊、還在觀察期的人，把上次的隊伍寫在提示裡
         if (c.key === 'clan' && p.wl) {
           span.classList.add('wl');
@@ -391,8 +397,6 @@ function render() {
   stat('戰隊', `${d.clans.length} 支`);
   stat('玩家', `${d.players.length} 人`);
   stat('顯示中', `${list.length} 人`);
-  const top = d.players[0];
-  if (top) stat('最高戰力', `${fmtNum(top.power)}（${top.name}）`);
   if (d.unresolved && d.unresolved.length) {
     stat('未取得 ID 的戰隊', d.unresolved.map(u => `#${u.rank} ${u.name}`).join('、'));
   }
