@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PCR 台服英雄榜</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --line: #2a2f3a;
+    --fg: #e4e8ef; --dim: #8b93a3; --accent: #6ea8fe; --gold: #f0c674;
+    --hot: #ff8a65; --cool: #58d68d; --low: #c25c5c;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f7f9; --panel: #fff; --panel2: #eef0f4; --line: #d8dce3;
+      --fg: #1d2027; --dim: #6b7280; --accent: #2563eb; --gold: #b45309;
+      --hot: #c2410c; --cool: #15803d; --low: #9b2226;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 "Noto Sans TC", "Microsoft JhengHei", system-ui, sans-serif;
+  }
+  header {
+    background: var(--panel); border-bottom: 1px solid var(--line);
+    padding: 12px 18px; position: sticky; top: 0; z-index: 20;
+  }
+  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  h1 { font-size: 17px; margin: 0 14px 0 0; font-weight: 700; }
+  .sub { color: var(--dim); font-size: 12px; }
+  .spacer { flex: 1; }
+
+  button, select, input {
+    font: inherit; font-size: 13px; background: var(--panel2); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px;
+  }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  input[type=search] { min-width: 190px; }
+  .tabs { display: flex; gap: 6px; }
+  .stats { display: flex; gap: 16px; margin-top: 10px; flex-wrap: wrap; font-size: 12px; color: var(--dim); }
+  .stats b { color: var(--fg); font-weight: 600; }
+
+  /* ---- 欄位挑選 ---- */
+  .picker { position: relative; }
+  .menu {
+    position: absolute; top: calc(100% + 6px); left: 0; z-index: 30;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px 12px; min-width: 210px; display: none;
+    box-shadow: 0 8px 24px rgba(0,0,0,.35);
+  }
+  .menu.open { display: block; }
+  .menu label {
+    display: flex; align-items: center; gap: 8px; padding: 3px 0;
+    font-size: 13px; cursor: pointer; user-select: none;
+  }
+  .menu label:hover { color: var(--accent); }
+  .menu .grp { color: var(--dim); font-size: 11px; margin: 8px 0 2px; letter-spacing: .5px; }
+  .menu .acts { display: flex; gap: 6px; margin-top: 10px; border-top: 1px solid var(--line); padding-top: 9px; }
+  .menu .acts button { flex: 1; padding: 4px 6px; font-size: 12px; }
+
+  main { padding: 0 18px 60px; }
+  table { border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  thead th {
+    position: sticky; top: 62px; background: var(--panel); z-index: 5;
+    border-bottom: 2px solid var(--line); padding: 8px 10px; text-align: right;
+    white-space: nowrap; cursor: pointer; user-select: none; font-size: 12px;
+  }
+  thead th:hover { color: var(--accent); }
+  thead th.l { text-align: left; }
+  thead th .dir { color: var(--accent); }
+  tbody td { padding: 6px 10px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  tbody td.l { text-align: left; }
+  tbody tr:hover { background: var(--panel2); }
+
+  /* auto table layout 會忽略 td 的 max-width，所以靠內層 span 限寬 */
+  .clip { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .nm .clip { max-width: 190px; font-weight: 600; }
+  .cl .clip { max-width: 170px; color: var(--dim); }
+  .cl .clip.wl { font-style: italic; opacity: .75; }   /* 已離隊、保留觀察中 */
+  .rk { color: var(--dim); }
+  .rk.top { color: var(--gold); font-weight: 700; }
+  .id { color: var(--dim); font-size: 12px; }
+  .pw { color: var(--gold); font-weight: 600; }
+  /* 才能關卡：10-10 綠、10-1~10-9 白、還沒進 10 章暗紅、沒打過灰 */
+  .tl { font-size: 13px; color: var(--fg); }
+  .tl.max { color: var(--cool); font-weight: 600; }
+  .tl.low { color: var(--low); }
+  .tl.none { color: var(--dim); }
+  .time { font-size: 12px; color: var(--dim); }
+  .time.old { color: var(--hot); }
+  .note { color: var(--dim); padding: 20px 0; font-size: 13px; }
+  footer { color: var(--dim); font-size: 12px; padding: 14px 18px; border-top: 1px solid var(--line); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="row">
+    <h1>PCR 台服英雄榜</h1>
+    <div class="tabs" id="tabs"></div>
+    <input type="search" id="q" placeholder="搜尋暱稱或戰隊…">
+    <select id="clanFilter"><option value="">全部戰隊</option></select>
+    <span class="picker">
+      <button id="pickBtn">欄位 ▾</button>
+      <div class="menu" id="pickMenu"></div>
+    </span>
+    <span class="spacer"></span>
+    <span class="sub" id="meta"></span>
+  </div>
+  <div class="stats" id="stats"></div>
+</header>
+
+<main>
+  <table>
+    <thead><tr id="head"></tr></thead>
+    <tbody id="body"></tbody>
+  </table>
+  <div class="note" id="note"></div>
+</main>
+
+<footer id="foot"></footer>
+
+<script>
+/**
+ * 才能關卡：資料存的是伺服器回傳的原始通關數（每章 10 關），
+ * 顯示時才換算成「章-關」。70 -> 7-10、91 -> 10-1、100 -> 10-10。
+ */
+const TALENT_STAGE10 = 91;   // 進入第 10 章的門檻
+const TALENT_MAX = 100;      // 10-10
+const toLesson = n => {
+  const c = Number(n) || 0;
+  if (c <= 0) return '';
+  return `${Math.ceil(c / 10)}-${c % 10 === 0 ? 10 : c % 10}`;
+};
+const pad = n => String(n).padStart(2, '0');
+const fmtTime = unix => {
+  if (!unix) return '';
+  const d = new Date(unix * 1000);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+const fmtNum = n => Number(n || 0).toLocaleString('en-US');
+
+/**
+ * 欄位定義。
+ *   def       預設是否勾選
+ *   fixed     不可取消（序號）
+ *   get       取值（用來排序）
+ *   render    畫成什麼（省略就用 get 的結果）
+ *   rankLike  名次類：數字越小越強，0 視為未上榜排最後
+ */
+const COLS = [
+  { key: '_no', label: '#', def: true, fixed: true, cls: 'rk', sortable: false },
+  { key: 'id', label: 'ID', def: true, cls: 'id', get: p => p.id },
+  { key: 'name', label: '暱稱', def: true, cls: 'l nm', text: true, get: p => p.name },
+  { key: 'clan', label: '戰隊', def: true, cls: 'l cl', text: true, get: p => p.clan },
+  { key: 'power', label: '戰力', def: true, cls: 'pw', desc: true, get: p => p.power, render: p => fmtNum(p.power) },
+  { key: 'lv', label: '等級', def: true, desc: true, get: p => p.lv },
+  // 顯示等級，但排序用背後的原始經驗值 —— 同一級常擠著幾十人，
+  // 只比等級的話那些人的先後等於隨機
+  { key: 'pk', label: '深域', def: true, desc: true, get: p => p.pkExp ?? p.pk, render: p => p.pk },
+  { key: 'units', label: '角色', def: true, desc: true, get: p => p.units },
+  { key: 'tower', label: '塔', def: false, desc: true, get: p => p.tower },
+  ...['火', '水', '風', '光', '暗'].map((label, i) => ({
+    key: 't' + i, label, def: true, desc: true, talent: i,
+    get: p => p.talents[i] || 0
+  })),
+  { key: 'arena', label: '競技場', def: false, rankLike: true, get: p => p.arena },
+  { key: 'grand', label: '公主競技場', def: false, rankLike: true, get: p => p.grand },
+  { key: 'login', label: '最後登入', def: true, desc: true, cls: 'time', get: p => p.login }
+];
+
+const COLS_KEY = 'heroBoard.columns';
+const state = {
+  server: null, sort: 'power', desc: true, q: '', clan: '',
+  visible: new Set(COLS.filter(c => c.def).map(c => c.key))
+};
+
+try {
+  const saved = JSON.parse(localStorage.getItem(COLS_KEY));
+  if (Array.isArray(saved) && saved.length) {
+    state.visible = new Set(saved.filter(k => COLS.some(c => c.key === k)));
+    for (const c of COLS) if (c.fixed) state.visible.add(c.key);
+  }
+} catch { /* 舊資料壞掉就用預設 */ }
+
+const el = id => document.getElementById(id);
+const loaded = {};                       // server -> payload（或 null 表示沒有資料）
+const data = () => loaded[state.server] ?? null;
+const shownCols = () => COLS.filter(c => state.visible.has(c.key));
+
+/**
+ * 資料是 gzip 過的 JSON（每天更新，不壓縮的話 git 歷史會爆掉）。
+ * 用瀏覽器內建的 DecompressionStream 解，不必載入額外的函式庫。
+ */
+async function loadServer(server) {
+    if (server in loaded) return loaded[server];
+    const base = (window.HERO_DATA_BASE || 'data/') + server;
+    try {
+        const res = await fetch(`${base}.json.gz`, { cache: 'no-cache' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        let text;
+        if (typeof DecompressionStream === 'function') {
+            text = await new Response(
+                res.body.pipeThrough(new DecompressionStream('gzip'))
+            ).text();
+        } else {
+            throw new Error('瀏覽器不支援 DecompressionStream，請更新瀏覽器');
+        }
+        loaded[server] = JSON.parse(text);
+    } catch (e) {
+        console.warn(`載入 ${server} 失敗：`, e.message);
+        loaded[server] = null;
+    }
+    return loaded[server];
+}
+
+function rows() {
+  const d = data();
+  if (!d) return [];
+  const q = state.q.trim().toLowerCase();
+  let list = d.players;
+  if (state.clan) list = list.filter(p => String(p.clanId) === state.clan);
+  if (q) list = list.filter(p =>
+    (p.name || '').toLowerCase().includes(q) ||
+    (p.clan || '').toLowerCase().includes(q) ||
+    (p.comment || '').toLowerCase().includes(q) ||
+    String(p.id).includes(q));
+
+  const col = COLS.find(c => c.key === state.sort) || COLS.find(c => c.key === 'power');
+  const dir = state.desc ? -1 : 1;
+  return [...list].sort((a, b) => {
+    let x = col.get(a), y = col.get(b);
+    if (col.rankLike) {
+      // 名次：越小越強，0（未上榜）永遠排最後
+      x = x || Infinity; y = y || Infinity;
+      return (x - y) * (state.desc ? 1 : -1);
+    }
+    if (typeof x === 'string') return String(x).localeCompare(String(y)) * -dir;
+    return (x - y) * dir;
+  });
+}
+
+function renderHead() {
+  const head = el('head');
+  head.innerHTML = '';
+  for (const c of shownCols()) {
+    const th = document.createElement('th');
+    if (c.cls && c.cls.includes('l')) th.className = 'l';
+    th.textContent = c.label;
+    if (c.sortable !== false) {
+      if (state.sort === c.key) {
+        const s = document.createElement('span');
+        s.className = 'dir';
+        s.textContent = state.desc ? ' ↓' : ' ↑';
+        th.append(s);
+      }
+      th.onclick = () => {
+        if (state.sort === c.key) state.desc = !state.desc;
+        else { state.sort = c.key; state.desc = c.desc !== false; }
+        render();
+      };
+    }
+    head.append(th);
+  }
+}
+
+function renderBody(list) {
+  const body = el('body');
+  body.innerHTML = '';
+  const cols = shownCols();
+  const frag = document.createDocumentFragment();
+
+  list.slice(0, 4000).forEach((p, i) => {
+    const tr = document.createElement('tr');
+    for (const c of cols) {
+      const td = document.createElement('td');
+      if (c.cls) td.className = c.cls;
+
+      if (c.key === '_no') {
+        td.textContent = String(i + 1);
+        if (i < 3) td.classList.add('top');
+      } else if (c.text) {
+        // 長名字靠內層 span 截斷，td 的 max-width 在 auto layout 下無效
+        const span = document.createElement('span');
+        span.className = 'clip';
+        span.textContent = c.get(p) || '';
+        span.title = c.get(p) || '';
+        // 已離開前 50 名戰隊、還在觀察期的人，把上次的隊伍寫在提示裡
+        if (c.key === 'clan' && p.wl) {
+          span.classList.add('wl');
+          span.title = `已不在前 50 名戰隊，保留觀察中\n上次在「${p.lastClan}」（${fmtTime(Date.parse(p.lastSeen) / 1000)}）`;
+        }
+        td.append(span);
+      } else if (c.talent !== undefined) {
+        const clears = Number(p.talents[c.talent]) || 0;
+        td.textContent = toLesson(clears) || '–';
+        td.classList.add('tl');
+        if (!clears) td.classList.add('none');
+        else if (clears >= TALENT_MAX) td.classList.add('max');
+        else if (clears < TALENT_STAGE10) td.classList.add('low');
+      } else if (c.key === 'login') {
+        td.textContent = fmtTime(p.login) || '–';
+        if (p.login && (Date.now() / 1000 - p.login) > 7 * 86400) td.classList.add('old');
+      } else if (c.rankLike) {
+        td.textContent = c.get(p) || '–';
+      } else {
+        td.textContent = c.render ? c.render(p) : c.get(p);
+        if (c.key === 'pk' && p.pkExp) td.title = `累積經驗 ${fmtNum(p.pkExp)}`;
+      }
+      tr.append(td);
+    }
+    if (p.comment) tr.title = p.comment;
+    frag.append(tr);
+  });
+  body.append(frag);
+  return Math.min(list.length, 4000);
+}
+
+function renderPicker() {
+  const menu = el('pickMenu');
+  menu.innerHTML = '';
+  const groups = [
+    ['基本', ['id', 'name', 'clan', 'power', 'lv', 'pk', 'units', 'tower']],
+    ['才能關卡', ['t0', 't1', 't2', 't3', 't4']],
+    ['其他', ['arena', 'grand', 'login']]
+  ];
+  for (const [title, keys] of groups) {
+    const h = document.createElement('div');
+    h.className = 'grp';
+    h.textContent = title;
+    menu.append(h);
+    for (const key of keys) {
+      const c = COLS.find(x => x.key === key);
+      const label = document.createElement('label');
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = state.visible.has(key);
+      box.onchange = () => {
+        box.checked ? state.visible.add(key) : state.visible.delete(key);
+        localStorage.setItem(COLS_KEY, JSON.stringify([...state.visible]));
+        render();
+      };
+      label.append(box, document.createTextNode(c.label));
+      menu.append(label);
+    }
+  }
+  const acts = document.createElement('div');
+  acts.className = 'acts';
+  const mk = (text, fn) => { const b = document.createElement('button'); b.textContent = text; b.onclick = fn; return b; };
+  acts.append(
+    mk('全選', () => { for (const c of COLS) state.visible.add(c.key); save(); }),
+    mk('回預設', () => {
+      state.visible = new Set(COLS.filter(c => c.def).map(c => c.key));
+      save();
+    })
+  );
+  function save() {
+    localStorage.setItem(COLS_KEY, JSON.stringify([...state.visible]));
+    renderPicker();
+    render();
+  }
+  menu.append(acts);
+}
+
+function render() {
+  const d = data();
+  if (!d) {
+    el('note').textContent = `這個伺服器還沒有資料。跑 node heroFetch.js collect ${state.server} 然後 node heroFetch.js build。`;
+    el('body').innerHTML = ''; el('head').innerHTML = ''; el('stats').innerHTML = ''; el('meta').textContent = '';
+    return;
+  }
+  renderHead();
+  const list = rows();
+  const shown = renderBody(list);
+
+  el('note').textContent = list.length > shown ? `只顯示前 ${shown} 筆，請用搜尋縮小範圍。` : '';
+  el('meta').textContent = `資料更新於 ${fmtTime(Date.parse(d.builtAt) / 1000)}`;
+
+  el('stats').innerHTML = '';
+  const stat = (label, value) => {
+    const s = document.createElement('span');
+    s.append(label + ' ');
+    const b = document.createElement('b');
+    b.textContent = value;
+    s.append(b);
+    el('stats').append(s);
+  };
+  stat('戰隊', `${d.clans.length} 支`);
+  stat('玩家', `${d.players.length} 人`);
+  stat('顯示中', `${list.length} 人`);
+  const top = d.players[0];
+  if (top) stat('最高戰力', `${fmtNum(top.power)}（${top.name}）`);
+  if (d.unresolved && d.unresolved.length) {
+    stat('未取得 ID 的戰隊', d.unresolved.map(u => `#${u.rank} ${u.name}`).join('、'));
+  }
+}
+
+async function switchServer(s) {
+  state.server = s;
+  state.clan = '';
+  for (const b of el('tabs').children) b.classList.toggle('on', b.dataset.s === s);
+
+  if (!(s in loaded)) {
+    el('note').textContent = '載入中…';
+    await loadServer(s);
+  }
+  const d = data();
+  const sel = el('clanFilter');
+  sel.innerHTML = '<option value="">全部戰隊</option>';
+  if (d) {
+    for (const c of d.clans) {
+      const o = document.createElement('option');
+      o.value = String(c.clanId);
+      o.textContent = `#${c.rank} ${c.name}`;
+      sel.append(o);
+    }
+    const wl = d.players.filter(p => p.wl).length;
+    if (wl) {
+      const o = document.createElement('option');
+      o.value = '0';
+      o.textContent = `（已離隊觀察中 ${wl} 人）`;
+      sel.append(o);
+    }
+  }
+  if (d) {
+    for (const b of el('tabs').children) {
+      if (b.dataset.s === s) b.textContent = d.label;
+    }
+  }
+  render();
+}
+
+// --- 啟動 ---
+for (const [key, fallback] of [['s1', '一服'], ['s2', '二服']]) {
+  const b = document.createElement('button');
+  b.dataset.s = key;
+  b.textContent = fallback;
+  b.onclick = () => switchServer(key);
+  el('tabs').append(b);
+}
+
+el('q').addEventListener('input', e => { state.q = e.target.value; render(); });
+el('clanFilter').addEventListener('change', e => { state.clan = e.target.value; render(); });
+el('pickBtn').onclick = e => { e.stopPropagation(); el('pickMenu').classList.toggle('open'); };
+el('pickMenu').onclick = e => e.stopPropagation();
+document.addEventListener('click', () => el('pickMenu').classList.remove('open'));
+
+renderPicker();
+el('foot').textContent = '資料取自遊戲內戰隊戰排名前 50 名的戰隊成員。競技場欄位為名次，數字越小越強。';
+switchServer('s1');
+</script>
+</body>
+</html>
