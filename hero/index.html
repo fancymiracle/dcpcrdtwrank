@@ -166,6 +166,8 @@ const COLS = [
   // 顯示等級，但排序用背後的原始經驗值 —— 同一級常擠著幾十人，
   // 只比等級的話那些人的先後等於隨機
   { key: 'pk', label: '深域', def: true, desc: true, get: p => p.pkExp ?? p.pk, render: p => p.pk },
+  // 開始收集總CR 之前的舊資料是 null：顯示「–」，排序時放在 0 的後面
+  { key: 'cr', label: '總CR', def: true, desc: true, get: p => p.cr ?? -1, render: p => p.cr ?? '–' },
   { key: 'units', label: '角色', def: true, desc: true, get: p => p.units },
   { key: 'tower', label: '塔', def: false, desc: true, get: p => p.tower },
   ...['火', '水', '風', '光', '暗'].map((label, i) => ({
@@ -183,13 +185,26 @@ const state = {
   visible: new Set(COLS.filter(c => c.def).map(c => c.key))
 };
 
+// 存檔格式 { visible, known }：known 記下存檔當時有哪些欄位，
+// 之後才新增的欄位就照它的預設值顯示，不會因為使用者調整過欄位而被藏起來。
+// 早期的存檔只有勾選清單（陣列），當時還沒有「總CR」。
 try {
   const saved = JSON.parse(localStorage.getItem(COLS_KEY));
-  if (Array.isArray(saved) && saved.length) {
-    state.visible = new Set(saved.filter(k => COLS.some(c => c.key === k)));
-    for (const c of COLS) if (c.fixed) state.visible.add(c.key);
+  const picked = Array.isArray(saved) ? saved : saved?.visible;
+  const known = Array.isArray(saved) ? COLS.map(c => c.key).filter(k => k !== 'cr') : saved?.known;
+  if (Array.isArray(picked) && picked.length && Array.isArray(known)) {
+    state.visible = new Set(picked.filter(k => COLS.some(c => c.key === k)));
+    for (const c of COLS) {
+      if (c.fixed || (c.def && !known.includes(c.key))) state.visible.add(c.key);
+    }
   }
 } catch { /* 舊資料壞掉就用預設 */ }
+
+function saveCols() {
+  try {
+    localStorage.setItem(COLS_KEY, JSON.stringify({ visible: [...state.visible], known: COLS.map(c => c.key) }));
+  } catch { /* 無痕模式之類存不了，就只在這次瀏覽有效 */ }
+}
 
 const el = id => document.getElementById(id);
 const loaded = {};                       // server -> payload（或 null 表示沒有資料）
@@ -329,7 +344,7 @@ function renderPicker() {
   const menu = el('pickMenu');
   menu.innerHTML = '';
   const groups = [
-    ['基本', ['id', 'name', 'clan', 'power', 'lv', 'pk', 'units', 'tower']],
+    ['基本', ['id', 'name', 'clan', 'power', 'lv', 'pk', 'cr', 'units', 'tower']],
     ['才能關卡', ['t0', 't1', 't2', 't3', 't4']],
     ['其他', ['arena', 'grand', 'login']]
   ];
@@ -346,7 +361,7 @@ function renderPicker() {
       box.checked = state.visible.has(key);
       box.onchange = () => {
         box.checked ? state.visible.add(key) : state.visible.delete(key);
-        localStorage.setItem(COLS_KEY, JSON.stringify([...state.visible]));
+        saveCols();
         render();
       };
       label.append(box, document.createTextNode(c.label));
@@ -364,7 +379,7 @@ function renderPicker() {
     })
   );
   function save() {
-    localStorage.setItem(COLS_KEY, JSON.stringify([...state.visible]));
+    saveCols();
     renderPicker();
     render();
   }
