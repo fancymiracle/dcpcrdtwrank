@@ -33,9 +33,10 @@
   .sub { color: var(--dim); font-size: 12px; }
   .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 0 16px 10px; }
   .tabs { display: inline-flex; background: var(--panel2); border-radius: 8px; padding: 2px; }
+  .tabs { flex: none; }
   .tabs button {
     border: 0; background: none; color: var(--dim); padding: 5px 12px;
-    border-radius: 6px; font: inherit; cursor: pointer;
+    border-radius: 6px; font: inherit; cursor: pointer; white-space: nowrap;
   }
   .tabs button.on { background: var(--accent); color: #0b0d12; font-weight: 600; }
   select, input, .btn {
@@ -160,7 +161,7 @@
       <div><h2>每日總分</h2><div class="sub" id="daily-sub">以遊戲的早上 5 點換日</div></div>
       <div style="display:flex;gap:8px;align-items:center">
         <div class="tabs" id="daily-mode">
-          <button data-m="dot" class="on" title="軸放大，差距看得清楚">點狀</button><button data-m="bar" title="長度從 0 起算">長條</button>
+          <button data-m="bar" class="on" title="軸放大的長條，底部鋸齒表示截斷">長條</button><button data-m="dot" title="軸放大，用位置表示數值">點狀</button><button data-m="zero" title="長度從 0 起算，比例是真的">從 0</button>
         </div>
         <div class="legend" id="lg-daily"></div>
       </div>
@@ -219,7 +220,7 @@ const state = {
   server: '1', month: null, laps: null, months: {},
   data: null, series: null, battle: null,
   selected: [], colors: new Map(),         // 隊名 -> 色槽（顏色跟著隊伍，不跟著名次）
-  scoreMode: 'cum', dailyMode: 'dot', showHourTable: false, onlyFinal: true,
+  scoreMode: 'cum', dailyMode: 'bar', showHourTable: false, onlyFinal: true,
   sort: { key: 'rank', desc: false }
 };
 
@@ -490,13 +491,13 @@ function lineChart(host, { series, xLabels, fmt, invert = false, height = 280, y
  * 每日總分都擠在 1800~2400 億，長條從 0 起算的話差距看不出來；
  * 點是用位置表示數值而不是長度，所以軸可以放大，不會像截斷長條那樣誇大差距。
  */
-function dotChart(host, { groups, series, fmt, height = 260 }) {
+function dotChart(host, { groups, series, fmt, height = 260, bounds }) {
   const f = frame(host, { height });
   const g = groups.length, k = series.length;
   if (!g || !k) return;
 
   const all = series.flatMap(s => s.values).filter(v => v > 0);
-  const { lo, hi, step } = niceBounds(Math.min(...all), Math.max(...all));
+  const { lo, hi, step } = bounds ?? niceBounds(Math.min(...all), Math.max(...all));
   const Y = v => f.y1 - ((v - lo) / (hi - lo)) * (f.y1 - f.y0);
   const bandW = (f.x1 - f.x0) / g;
   const gap = Math.min(22, (bandW * 0.7) / Math.max(k - 1, 1));
@@ -526,19 +527,26 @@ function dotChart(host, { groups, series, fmt, height = 260 }) {
   });
 }
 
-/** 分組長條圖：每個 group 一組，組內每個數列一根 */
-function barChart(host, { groups, series, fmt, height = 260 }) {
+/**
+ * 分組長條圖：每個 group 一組，組內每個數列一根。
+ *
+ * 傳 bounds 進來就是「軸有截斷」的版本（長度不是從 0 起算，差距才看得出來），
+ * 這時會在底部畫鋸齒提醒 —— 截斷的長條會誇大差距，不能拿長度去比倍數。
+ */
+function barChart(host, { groups, series, fmt, height = 260, bounds }) {
   const f = frame(host, { height });
   const g = groups.length, k = series.length;
   if (!g || !k) return;
 
-  const hi = Math.max(1, ...series.flatMap(s => s.values));
-  const Y = v => f.y1 - (v / hi) * (f.y1 - f.y0);
+  const all = series.flatMap(s => s.values).filter(v => v > 0);
+  const b = bounds ?? { lo: 0, hi: Math.max(1, ...all), step: Math.max(1, ...all) / 4 };
+  const { lo, hi, step } = b;
+  const Y = v => f.y1 - ((Math.max(v, lo) - lo) / (hi - lo)) * (f.y1 - f.y0);
   const bandW = (f.x1 - f.x0) / g;
   const barW = Math.max(2, (bandW * 0.78) / k - 2);   // 相鄰長條之間留 2px 間隙
 
   const yTicks = [];
-  for (let i = 0; i <= 4; i++) { const v = (hi * i) / 4; yTicks.push({ y: Y(v), label: fmt(v) }); }
+  for (let v = lo; v <= hi + step / 2; v += step) yTicks.push({ y: Y(v), label: fmt(v) });
   axes(f, { yTicks, xTicks: groups.map((lb, i) => ({ x: f.x0 + bandW * (i + 0.5), label: lb })) });
 
   series.forEach((s, si) => {
@@ -558,6 +566,14 @@ function barChart(host, { groups, series, fmt, height = 260 }) {
       f.svg.append(rect);
     });
   });
+
+  // 軸截斷的鋸齒：先用底色咬掉長條底部，再描一條細線
+  if (lo > 0) {
+    let d = `M${f.x0} ${f.y1 - 5}`;
+    for (let x = f.x0; x < f.x1; x += 12) d += 'l6 -5l6 5';
+    f.svg.append(node('path', { d, fill: 'none', stroke: 'var(--panel)', 'stroke-width': 6 }));
+    f.svg.append(node('path', { d, fill: 'none', stroke: 'var(--axis)', 'stroke-width': 1 }));
+  }
 }
 
 // --- 畫面 ---
@@ -663,10 +679,23 @@ function renderCharts(clans) {
     }),
     fmt: v => 億短(v) + ' 億'
   };
-  (state.dailyMode === 'bar' ? barChart : dotChart)(el('c-daily'), dailyOpts);
-  el('daily-sub').textContent = state.dailyMode === 'bar'
-    ? '以遊戲的早上 5 點換日。長度從 0 起算，所以各隊差距看起來不明顯'
-    : '以遊戲的早上 5 點換日。軸有放大，只看得出相對高低，不要用長度去比倍數';
+  const vals = dailyOpts.series.flatMap(s => s.values).filter(v => v > 0);
+  const bounds = vals.length ? niceBounds(Math.min(...vals), Math.max(...vals)) : null;
+  const zoomed = Boolean(bounds && bounds.lo > 0);
+
+  if (state.dailyMode === 'zero') {
+    barChart(el('c-daily'), dailyOpts);
+    el('daily-sub').textContent = '以遊戲的早上 5 點換日。長度從 0 起算，比例是真的，但各隊差距看起來不明顯';
+  } else if (state.dailyMode === 'dot') {
+    dotChart(el('c-daily'), { ...dailyOpts, bounds });
+    el('daily-sub').textContent = '以遊戲的早上 5 點換日。' +
+      (zoomed ? `軸從 ${億短(bounds.lo)} 億起，只看得出相對高低` : '軸從 0 起');
+  } else {
+    barChart(el('c-daily'), { ...dailyOpts, bounds });
+    el('daily-sub').textContent = '以遊戲的早上 5 點換日。' + (zoomed
+      ? `長度從 ${億短(bounds.lo)} 億起算（底部鋸齒表示軸被截斷），差距看得出來，但不要用長度去比倍數`
+      : '長度從 0 起算');
+  }
 
   const md = d => `${Number(d.slice(4, 6))}/${Number(d.slice(6))}`;
   el('daily-note').textContent = state.partialDays.length
