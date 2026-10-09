@@ -1,0 +1,208 @@
+// 公會戰排名快照的換算。
+//
+// 原始資料是 bot 每 30 分鐘存的一筆快照（<伺服器>_data_<yyyyMM>.json.gz）：
+//   { "<yyyyMMddHHmm>": [{ i: 索引, r: 名次, d: 累積分數, n: 隊名 }, …] }
+// d 是當期累積總分（遞增），所以「這段時間打了多少」一律是兩筆相減。
+//
+// 這個檔同時被網頁與測試載入，所以不碰 DOM、不依賴任何函式庫。
+
+/** 遊戲的一天從早上 5 點開始 */
+export const BATTLE_DAY_START = 5;
+
+/** 'yyyyMMddHHmm' -> { y, m, d, hour, min } */
+export function parseStamp(ts) {
+    const s = String(ts);
+    return {
+        y: Number(s.slice(0, 4)), m: Number(s.slice(4, 6)), d: Number(s.slice(6, 8)),
+        hour: Number(s.slice(8, 10)), min: Number(s.slice(10, 12))
+    };
+}
+
+/** 'yyyyMMddHHmm' -> 這筆屬於哪個戰隊戰日（早上 5 點前算前一天），回 'yyyyMMdd' */
+export function battleDay(ts) {
+    const { y, m, d, hour } = parseStamp(ts);
+    const date = new Date(Date.UTC(y, m - 1, d));
+    if (hour < BATTLE_DAY_START) date.setUTCDate(date.getUTCDate() - 1);
+    const p = n => String(n).padStart(2, '0');
+    return `${date.getUTCFullYear()}${p(date.getUTCMonth() + 1)}${p(date.getUTCDate())}`;
+}
+
+/** 顯示用的短時間 'MM/DD HH:mm' */
+export function shortTime(ts) {
+    const { m, d, hour, min } = parseStamp(ts);
+    const p = n => String(n).padStart(2, '0');
+    return `${p(m)}/${p(d)} ${p(hour)}:${p(min)}`;
+}
+
+/**
+ * 把整個月檔整理成各戰隊的時間序列。
+ * @returns {{stamps: string[], clans: Array<{name, points: Array<{ts, rank, score}>, finalRank, finalScore}>}}
+ *   clans 依最終名次排序
+ */
+export function buildSeries(data) {
+    const stamps = Object.keys(data || {}).filter(k => Array.isArray(data[k])).sort();
+    const byName = new Map();
+    for (const ts of stamps) {
+        for (const c of data[ts]) {
+            if (!c || !c.n) continue;
+            if (!byName.has(c.n)) byName.set(c.n, []);
+            byName.get(c.n).push({ ts, rank: Number(c.r), score: Number(c.d) || 0 });
+        }
+    }
+    // 中途掉出前 150 名的隊伍最後一筆是它掉出去之前的名次，不能當成最終名次
+    const lastTs = stamps[stamps.length - 1];
+    const clans = [...byName.entries()].map(([name, points]) => {
+        const last = points[points.length - 1];
+        return {
+            name, points,
+            finalRank: last.ts === lastTs ? last.rank : null,
+            lastRank: last.rank,
+            finalScore: last.score,
+            inFinal: last.ts === lastTs
+        };
+    });
+    clans.sort((a, b) => (a.finalRank ?? Infinity) - (b.finalRank ?? Infinity) || b.finalScore - a.finalScore);
+    return { stamps, clans };
+}
+
+/** 每個時間點比上一筆多了多少分（第一筆沒有前一筆，不計） */
+export function deltaPoints(points) {
+    const out = [];
+    for (let i = 1; i < points.length; i++) {
+        out.push({ ts: points[i].ts, gain: points[i].score - points[i - 1].score });
+    }
+    return out;
+}
+
+/**
+ * 每個戰隊戰日的得分 = 當日最後一筆 - 前一日最後一筆。
+ * @returns {Array<{day, total, end}>} end 是當日結束時的累積分數
+ */
+export function dailyTotals(points) {
+    const lastOfDay = new Map();
+    for (const p of points) lastOfDay.set(battleDay(p.ts), p.score);
+    const days = [...lastOfDay.keys()].sort();
+
+    // 資料若是從戰隊戰中途才開始收，第一筆就已經有一大包累積分數，
+    // 那一天的「單日分數」算出來會是整期累積，會誤導 —— 寧可不給。
+    // 從頭收的話開打當下分數接近 0，所以拿第一筆跟整期最後的總分比最準。
+    const first = points[0]?.score ?? 0;
+    const last = points[points.length - 1]?.score ?? 0;
+    const partialFirst = last > 0 && first > last * 0.03;
+
+    let prev = 0;
+    return days.map((day, i) => {
+        const end = lastOfDay.get(day);
+        const row = i === 0 && partialFirst
+            ? { day, total: null, end, partial: true }
+            : { day, total: end - prev, end };
+        prev = end;
+        return row;
+    });
+}
+
+/** 一天的時段順序：5 點到隔天 4 點 */
+export function dayHours() {
+    return Array.from({ length: 24 }, (_, i) => (BATTLE_DAY_START + i) % 24);
+}
+
+/**
+ * 依時段統計增量，看得出一支戰隊都在什麼時間出刀。
+ * @returns {Array<{hour, total, samples}>} 從 5 點排到隔天 4 點
+ */
+export function hourlyPace(points) {
+    const sum = new Map(dayHours().map(h => [h, { hour: h, total: 0, samples: 0 }]));
+    for (const { ts, gain } of deltaPoints(points)) {
+        const slot = sum.get(parseStamp(ts).hour);
+        if (!slot) continue;
+        slot.total += gain;
+        slot.samples++;
+    }
+    return dayHours().map(h => sum.get(h));
+}
+
+/**
+ * 累積分數推回目前在第幾周。
+ *
+ * 每一周的總分 = 五隻王的血量 × 各自的分數倍率，倍率依階段不同（laps.json 來自 master.db）。
+ * 實際上五隻王可以差一周（打掉 23-1 之後就不能再打 24-1），所以這是整體的推估值。
+ *
+ * @param {number} score 累積分數
+ * @param {{phases: Array<{from, to, lapScore}>}} table
+ * @returns {{lap: number, progress: number}|null} 對照表不可用時回 null
+ */
+export function lapOf(score, table) {
+    const phases = table?.phases?.filter(p => p.lapScore > 0) ?? [];
+    if (!phases.length) return null;
+
+    let acc = 0;
+    for (const p of phases) {
+        const last = p.to === -1 || p.to == null ? Infinity : p.to;
+        for (let lap = p.from; lap <= last; lap++) {
+            if (acc + p.lapScore > score) return { lap, progress: (score - acc) / p.lapScore };
+            acc += p.lapScore;
+            if (lap - p.from > 2000) break;      // 對照表壞掉時不要變成無窮迴圈
+        }
+    }
+    return { lap: Infinity, progress: 1 };
+}
+
+/**
+ * 已經打完的天數（進行中的那天不算）。
+ * 一天到 23:50 收完最後一筆才算結束 —— 刀數推估要靠完整的一天當基準。
+ */
+export function completedDays(stamps) {
+    if (!stamps?.length) return 0;
+    const days = [...new Set(stamps.map(battleDay))].sort();
+    const last = stamps[stamps.length - 1];
+    const { hour, min } = parseStamp(last);
+    const lastDayDone = hour === 23 && min >= 50;
+    return lastDayDone ? days.length : days.length - 1;
+}
+
+/**
+ * 這個月的快照屬於哪一期公會戰（laps.json 來自 master.db，可能還沒有最新一期）。
+ * @param {string[]} stamps 快照時間
+ * @param {{battles: Array}} laps
+ */
+export function battleFor(stamps, laps) {
+    const first = stamps?.[0];
+    if (!first || !laps?.battles) return null;
+    return laps.battles.find(b => b.startStamp && b.endStamp &&
+        b.startStamp <= first && first <= b.endStamp) ?? null;
+}
+
+/**
+ * 推估刀數。
+ *
+ * 快照只有總分，沒有「這段分數是幾刀打的」，所以只能估：
+ * 假設完整的一天會把 90 刀打完，用那天的總分除以 90 當作每刀均分，
+ * 再用進行中那天已得的分數反推已用幾刀。
+ * 第一天有 1~3 階段、分數偏低，有別天可用時就不拿它當基準。
+ * 殘刀、凱留刀都會讓實際刀數比這個估計多。
+ *
+ * @param {Array<{day, total}>} days dailyTotals 的結果
+ * @param {{hitsPerDay?: number, complete?: number}} opts complete = 已經結束的天數
+ */
+export function hitEstimate(days, { hitsPerDay = 90, complete = Math.max(days.length - 1, 0) } = {}) {
+    if (!days?.length) return null;
+
+    const completed = days.slice(0, complete);
+    const basisDays = completed.length > 1 ? completed.slice(1) : completed.length ? completed : days.slice(0, 1);
+    const totals = basisDays.map(d => d.total).filter(t => t > 0);
+    if (!totals.length) return null;
+
+    const perHit = totals.reduce((a, b) => a + b, 0) / (totals.length * hitsPerDay);
+    if (!(perHit > 0)) return null;
+
+    const current = days[complete] ?? null;
+    const used = current ? current.total / perHit : null;
+    return {
+        perHit,
+        basis: basisDays[basisDays.length - 1].day,
+        firstDayOnly: completed.length === 0,
+        day: current?.day ?? null,
+        used: used == null ? null : Math.round(used * 10) / 10,
+        left: used == null ? null : Math.round((hitsPerDay - used) * 10) / 10
+    };
+}

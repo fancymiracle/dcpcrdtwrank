@@ -1,0 +1,755 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PCR 台服公會戰走勢</title>
+<style>
+  /* 深色為主，跟英雄榜同一套底色；數列顏色是另外驗證過的 8 色 */
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --line: #2a2f3a;
+    --fg: #e4e8ef; --dim: #8b93a3; --muted: #898781; --accent: #6ea8fe;
+    --grid: #262b35; --axis: #39404d;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+    --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f7f9; --panel: #fff; --panel2: #eef0f4; --line: #d8dce3;
+      --fg: #1d2027; --dim: #6b7280; --muted: #898781; --accent: #2563eb;
+      --grid: #e8eaee; --axis: #c3c2b7;
+      --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100;
+      --s5: #e87ba4; --s6: #008300; --s7: #4a3aa7; --s8: #e34948;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", "Noto Sans TC", sans-serif;
+  }
+  header { padding: 14px 16px 0; }
+  h1 { font-size: 18px; margin: 0 0 10px; }
+  h2 { font-size: 14px; margin: 0 0 2px; font-weight: 600; }
+  .sub { color: var(--dim); font-size: 12px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 0 16px 10px; }
+  .tabs { display: inline-flex; background: var(--panel2); border-radius: 8px; padding: 2px; }
+  .tabs button {
+    border: 0; background: none; color: var(--dim); padding: 5px 12px;
+    border-radius: 6px; font: inherit; cursor: pointer;
+  }
+  .tabs button.on { background: var(--accent); color: #0b0d12; font-weight: 600; }
+  select, input, .btn {
+    background: var(--panel2); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 7px; padding: 5px 9px; font: inherit;
+  }
+  .btn { cursor: pointer; }
+  .btn:hover { border-color: var(--accent); }
+  main { padding: 0 16px 40px; display: grid; gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+  .head { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
+
+  /* 戰隊選擇 */
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px;
+    background: var(--panel2); border: 1px solid var(--line); border-radius: 999px;
+    font-size: 13px; cursor: pointer; min-height: 26px;
+  }
+  .chip .dot { width: 9px; height: 9px; border-radius: 50%; }
+  .chip .x { color: var(--dim); }
+  .pick { position: relative; }
+  .list {
+    display: none; position: absolute; z-index: 20; top: 100%; left: 0; margin-top: 4px;
+    width: min(340px, 86vw); max-height: 320px; overflow: auto;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 6px;
+    box-shadow: 0 10px 28px rgba(0,0,0,.45);
+  }
+  .list.open { display: block; }
+  .list label {
+    display: flex; gap: 8px; align-items: center; padding: 5px 7px;
+    border-radius: 6px; cursor: pointer; min-height: 30px;
+  }
+  .list label:hover { background: var(--panel2); }
+  .list .rk { color: var(--dim); font-variant-numeric: tabular-nums; min-width: 30px; }
+
+  /* 選中戰隊的摘要卡 */
+  #cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
+  .sum { background: var(--panel); border: 1px solid var(--line); border-left-width: 3px; border-radius: 10px; padding: 10px 12px; }
+  .sum .nm { font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .sum .big { font-size: 20px; margin: 4px 0 2px; }
+  .sum dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 6px 0 0; font-size: 12px; }
+  .sum dt { color: var(--dim); }
+  .sum dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+
+  /* 圖 */
+  .legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; color: var(--dim); }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  .plot { position: relative; }
+  .plot svg { display: block; width: 100%; }
+  .tip {
+    position: absolute; pointer-events: none; opacity: 0; transition: opacity .08s;
+    background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
+    padding: 6px 8px; font-size: 12px; white-space: nowrap; z-index: 10;
+    box-shadow: 0 6px 20px rgba(0,0,0,.45); font-variant-numeric: tabular-nums;
+  }
+  .tip b { font-weight: 600; }
+  .tip .row { display: flex; align-items: center; gap: 6px; }
+  .tip .row i { width: 8px; height: 8px; border-radius: 50%; }
+
+  /* 表 */
+  .scroll { overflow: auto; max-height: 70vh; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  thead th {
+    position: sticky; top: 0; background: var(--panel); color: var(--dim);
+    font-weight: 600; text-align: right; padding: 6px 8px; cursor: pointer;
+    border-bottom: 1px solid var(--line); white-space: nowrap; font-size: 12px;
+  }
+  thead th.l, td.l { text-align: left; }
+  tbody td { padding: 5px 8px; text-align: right; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+  tbody tr:hover { background: var(--panel2); }
+  tbody tr.on { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+  .nmcell { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  .nmcell .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .note { color: var(--dim); font-size: 12px; }
+  .warn { color: var(--s4); }
+  footer { color: var(--dim); font-size: 12px; padding: 0 16px 28px; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>PCR 台服公會戰走勢</h1>
+  <div class="sub" id="meta">載入中…</div>
+</header>
+
+<div class="bar">
+  <div class="tabs" id="servers"></div>
+  <select id="month"></select>
+  <div class="pick">
+    <button class="btn" id="pickBtn">選擇戰隊 ▾</button>
+    <div class="list" id="pickList"><input id="search" placeholder="搜尋隊名…" style="width:100%;margin-bottom:6px"><div id="opts"></div></div>
+  </div>
+  <button class="btn" id="reset">回前 8 名</button>
+  <span class="note" id="cap"></span>
+</div>
+
+<main>
+  <div id="cards"></div>
+
+  <section class="card">
+    <div class="head"><div><h2>名次走勢</h2><div class="sub">越上面名次越前</div></div><div class="legend" id="lg-rank"></div></div>
+    <div class="plot" id="c-rank"></div>
+  </section>
+
+  <section class="card">
+    <div class="head">
+      <div><h2 id="score-title">累積分數</h2><div class="sub" id="score-sub">整期累積的總分</div></div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <div class="tabs" id="score-mode">
+          <button data-m="cum" class="on">累積</button><button data-m="gain">每 30 分</button>
+        </div>
+        <div class="legend" id="lg-score"></div>
+      </div>
+    </div>
+    <div class="plot" id="c-score"></div>
+  </section>
+
+  <section class="card">
+    <div class="head"><div><h2>每日總分</h2><div class="sub">以遊戲的早上 5 點換日</div></div><div class="legend" id="lg-daily"></div></div>
+    <div class="plot" id="c-daily"></div>
+    <div class="note" id="daily-note"></div>
+  </section>
+
+  <section class="card">
+    <div class="head">
+      <div><h2>出刀時段</h2><div class="sub">整期在各時段拿到的分數，看得出習慣幾點打</div></div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn" id="hourTable">顯示數值</button>
+        <div class="legend" id="lg-hour"></div>
+      </div>
+    </div>
+    <div class="plot" id="c-hour"></div>
+    <div class="scroll" id="hour-table" hidden></div>
+  </section>
+
+  <section class="card">
+    <div class="head">
+      <div><h2>全部戰隊</h2><div class="sub">點隊名可以加進上面的圖</div></div>
+      <div style="display:flex;gap:10px;align-items:center">
+        <label class="note" style="display:flex;gap:5px;align-items:center;cursor:pointer">
+          <input type="checkbox" id="onlyFinal" checked>只看最後在榜的
+        </label>
+        <div class="note" id="tableNote"></div>
+      </div>
+    </div>
+    <div class="scroll"><table id="table"><thead></thead><tbody></tbody></table></div>
+  </section>
+</main>
+
+<footer>
+  資料是另一支 bot 每 30 分鐘抓一次的排名快照，分數為當期累積總分。
+  周目與刀數為<b>推估</b>：周目由累積分數對照 master.db 的王血量與分數倍率換算，實際上五隻王可能相差一周；
+  刀數假設完整的一天打滿 90 刀，殘刀會讓實際刀數更多。
+  <span id="hero-link"></span>
+</footer>
+
+<script type="module">
+import {
+  buildSeries, deltaPoints, dailyTotals, hourlyPace, lapOf, hitEstimate,
+  battleFor, battleDay, shortTime, parseStamp, completedDays
+} from './cbSeries.js';
+
+const SERVERS = [{ key: '1', label: '美食（一服）' }, { key: '2', label: '合服（二服）' }];
+const MAX_SERIES = 8;                       // 數列顏色只有 8 個，不循環重用
+const SLOTS = ['--s1','--s2','--s3','--s4','--s5','--s6','--s7','--s8'];
+const el = id => document.getElementById(id);
+const 億 = n => (Math.abs(n) >= 1e8 ? (n / 1e8).toFixed(1) + ' 億' : Math.round(n).toLocaleString('en-US'));
+const 億短 = n => (n / 1e8).toFixed(n / 1e8 >= 100 ? 0 : 1);
+
+const state = {
+  server: '1', month: null, laps: null, months: {},
+  data: null, series: null, battle: null,
+  selected: [], colors: new Map(),         // 隊名 -> 色槽（顏色跟著隊伍，不跟著名次）
+  scoreMode: 'cum', showHourTable: false, onlyFinal: true,
+  sort: { key: 'rank', desc: false }
+};
+
+const key = () => `cbBoard.selected.${state.server}`;
+const colorOf = name => `var(${SLOTS[state.colors.get(name) ?? 0]})`;
+
+function assignColors() {
+  const used = new Set([...state.colors.entries()].filter(([n]) => state.selected.includes(n)).map(([, s]) => s));
+  for (const [n] of [...state.colors]) if (!state.selected.includes(n)) state.colors.delete(n);
+  for (const n of state.selected) {
+    if (state.colors.has(n)) continue;
+    const free = SLOTS.findIndex((_, i) => !used.has(i));
+    state.colors.set(n, free < 0 ? 0 : free);
+    used.add(free < 0 ? 0 : free);
+  }
+}
+
+// --- 載入 ---
+async function loadGz(url) {
+  const res = await fetch(url, { cache: 'no-cache' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (typeof DecompressionStream !== 'function') throw new Error('瀏覽器不支援 DecompressionStream，請更新瀏覽器');
+  return JSON.parse(await new Response(res.body.pipeThrough(new DecompressionStream('gzip'))).text());
+}
+
+async function boot() {
+  el('servers').innerHTML = '';
+  for (const s of SERVERS) {
+    const b = document.createElement('button');
+    b.textContent = s.label;
+    b.onclick = () => switchServer(s.key);
+    el('servers').append(b);
+  }
+  el('hero-link').innerHTML = ' · <a href="../hero/">英雄榜</a>';
+
+  try { state.laps = await (await fetch('laps.json', { cache: 'no-cache' })).json(); }
+  catch { state.laps = null; }
+  try { state.months = await (await fetch('months.json', { cache: 'no-cache' })).json(); }
+  catch { state.months = {}; }
+
+  await switchServer(state.server);
+}
+
+async function switchServer(server) {
+  state.server = server;
+  for (const b of el('servers').children) b.classList.toggle('on', b.textContent === SERVERS.find(s => s.key === server).label);
+
+  const list = (state.months[server] ?? []).slice().sort().reverse();
+  el('month').innerHTML = '';
+  for (const ym of list) {
+    const o = document.createElement('option');
+    o.value = ym;
+    o.textContent = `${ym.slice(0, 4)} 年 ${Number(ym.slice(4))} 月`;
+    el('month').append(o);
+  }
+  if (!list.length) { el('meta').textContent = '找不到資料檔（months.json 是空的）'; return; }
+  state.month = list.includes(state.month) ? state.month : list[0];
+  el('month').value = state.month;
+  await loadMonth();
+}
+
+async function loadMonth() {
+  el('meta').textContent = '載入中…';
+  try {
+    state.data = await loadGz(`../${state.server}_data_${state.month}.json.gz`);
+  } catch (e) {
+    el('meta').textContent = `載入失敗：${e.message}`;
+    state.series = null; render();
+    return;
+  }
+  state.series = buildSeries(state.data);
+  state.battle = battleFor(state.series.stamps, state.laps);
+
+  // 選擇記在瀏覽器裡；隊名對不上（換月份、隊伍改名）就退回前 8 名
+  let saved = [];
+  try { saved = JSON.parse(localStorage.getItem(key())) ?? []; } catch { /* 壞掉就用預設 */ }
+  const names = new Set(state.series.clans.map(c => c.name));
+  state.selected = saved.filter(n => names.has(n)).slice(0, MAX_SERIES);
+  if (!state.selected.length) state.selected = state.series.clans.slice(0, MAX_SERIES).map(c => c.name);
+  assignColors();
+  render();
+}
+
+function save() {
+  try { localStorage.setItem(key(), JSON.stringify(state.selected)); } catch { /* 無痕模式 */ }
+}
+
+function toggle(name) {
+  const i = state.selected.indexOf(name);
+  if (i >= 0) state.selected.splice(i, 1);
+  else if (state.selected.length >= MAX_SERIES) {
+    el('cap').textContent = `最多同時 ${MAX_SERIES} 隊，先取消一隊再加`;
+    setTimeout(() => { el('cap').textContent = ''; }, 2600);
+    return;
+  } else state.selected.push(name);
+  assignColors(); save(); render();
+}
+
+// --- SVG 小工具 ---
+const NS = 'http://www.w3.org/2000/svg';
+const node = (tag, attrs = {}) => {
+  const n = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+  return n;
+};
+
+/** 畫布：回傳 svg 與繪圖區範圍 */
+function frame(host, { height = 280, pad = { t: 10, r: 14, b: 26, l: 62 } }) {
+  host.innerHTML = '';
+  const w = Math.max(host.clientWidth || 640, 320);
+  const svg = node('svg', { width: w, height, viewBox: `0 0 ${w} ${height}`, role: 'img' });
+  host.append(svg);
+  const tip = document.createElement('div');
+  tip.className = 'tip';
+  host.append(tip);
+  return { svg, tip, w, h: height, x0: pad.l, x1: w - pad.r, y0: pad.t, y1: height - pad.b };
+}
+
+function axes(f, { yTicks, xTicks }) {
+  for (const t of yTicks) {
+    f.svg.append(node('line', { x1: f.x0, x2: f.x1, y1: t.y, y2: t.y, stroke: 'var(--grid)', 'stroke-width': 1 }));
+    const lb = node('text', { x: f.x0 - 8, y: t.y + 4, 'text-anchor': 'end', fill: 'var(--muted)', 'font-size': 11 });
+    lb.textContent = t.label;
+    f.svg.append(lb);
+  }
+  f.svg.append(node('line', { x1: f.x0, x2: f.x1, y1: f.y1, y2: f.y1, stroke: 'var(--axis)', 'stroke-width': 1 }));
+  for (const t of xTicks) {
+    const lb = node('text', { x: t.x, y: f.y1 + 16, 'text-anchor': 'middle', fill: 'var(--muted)', 'font-size': 11 });
+    lb.textContent = t.label;
+    f.svg.append(lb);
+  }
+}
+
+function legend(host, series) {
+  host.innerHTML = '';
+  for (const s of series) {
+    const sp = document.createElement('span');
+    const i = document.createElement('i');
+    i.style.background = s.color;
+    sp.append(i, document.createTextNode(s.name));
+    host.append(sp);
+  }
+}
+
+/**
+ * 折線圖。series[].values 是跟 xLabels 等長的陣列（null = 那個時間點沒資料）。
+ * 滑鼠移動時畫十字線並列出該時間點所有數列的值。
+ */
+function lineChart(host, { series, xLabels, fmt, invert = false, height = 280, yTickCount = 5, cap = 0 }) {
+  const f = frame(host, { height });
+  const n = xLabels.length;
+  if (!n || !series.length) return;
+
+  const all = series.flatMap(s => s.values).filter(v => v != null);
+  let lo = Math.min(...all), hi = Math.max(...all);
+  if (lo === hi) { lo -= 1; hi += 1; }
+  if (!invert && lo > 0) lo = 0;                      // 分數從 0 起算比較好讀
+  // 名次圖：開打頭幾筆名次會亂跳到一兩百名，整張圖會被它撐扁。
+  // 取 95 百分位當上限，超出的部分裁掉（滑過去還是看得到真正的名次）。
+  if (cap > 0 && cap < 1) {
+    const sorted = [...all].sort((a, b) => a - b);
+    const q = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * cap))];
+    hi = Math.max(10, Math.min(hi, Math.ceil(q)));
+  }
+  const pad = (hi - lo) * 0.08;
+  if (invert) { lo = Math.max(1, lo - pad); hi = hi + pad; }
+
+  const X = i => f.x0 + (n === 1 ? 0 : (i * (f.x1 - f.x0)) / (n - 1));
+  const Y = v => invert
+    ? f.y0 + ((v - lo) / (hi - lo)) * (f.y1 - f.y0)   // 名次：數字越小越上面
+    : f.y1 - ((v - lo) / (hi - lo)) * (f.y1 - f.y0);
+
+  const yTicks = [];
+  for (let i = 0; i <= yTickCount; i++) {
+    const v = lo + ((hi - lo) * i) / yTickCount;
+    yTicks.push({ y: Y(v), label: invert ? `#${Math.round(v)}` : fmt(v) });
+  }
+  const step = Math.max(1, Math.round(n / 6));
+  const xTicks = [];
+  for (let i = 0; i < n; i += step) xTicks.push({ x: X(i), label: xLabels[i] });
+  axes(f, { yTicks, xTicks });
+
+  // 超出軸範圍的線段不要畫到圖外
+  const clipId = `clip-${Math.random().toString(36).slice(2)}`;
+  const clip = node('clipPath', { id: clipId });
+  clip.append(node('rect', { x: f.x0, y: f.y0 - 2, width: f.x1 - f.x0, height: f.y1 - f.y0 + 4 }));
+  f.svg.append(clip);
+
+  for (const s of series) {
+    let d = '', pen = false;
+    s.values.forEach((v, i) => {
+      if (v == null) { pen = false; return; }
+      d += `${pen ? 'L' : 'M'}${X(i).toFixed(1)} ${Y(v).toFixed(1)}`;
+      pen = true;
+    });
+    f.svg.append(node('path', {
+      d, fill: 'none', stroke: s.color, 'stroke-width': 2,
+      'stroke-linejoin': 'round', 'stroke-linecap': 'round', 'clip-path': `url(#${clipId})`
+    }));
+  }
+
+  // 數列少的時候直接把名字標在線尾，不必一直回頭看圖例
+  if (series.length <= 4) {
+    for (const s of series) {
+      for (let i = s.values.length - 1; i >= 0; i--) {
+        if (s.values[i] == null) continue;
+        const t = node('text', {
+          x: Math.min(X(i) + 6, f.x1 - 2), y: Y(s.values[i]) + 4,
+          fill: s.color, 'font-size': 11, 'text-anchor': 'end'
+        });
+        t.textContent = s.name.length > 8 ? s.name.slice(0, 8) + '…' : s.name;
+        f.svg.append(t);
+        break;
+      }
+    }
+  }
+
+  const cross = node('line', { y1: f.y0, y2: f.y1, stroke: 'var(--axis)', 'stroke-width': 1, opacity: 0 });
+  f.svg.append(cross);
+  const dots = series.map(s => {
+    const c = node('circle', { r: 4, fill: s.color, stroke: 'var(--panel)', 'stroke-width': 2, opacity: 0 });
+    f.svg.append(c);
+    return c;
+  });
+  const hit = node('rect', { x: f.x0, y: f.y0, width: f.x1 - f.x0, height: f.y1 - f.y0, fill: 'transparent' });
+  f.svg.append(hit);
+
+  const show = e => {
+    const r = f.svg.getBoundingClientRect();
+    const i = Math.round(((e.clientX - r.left - f.x0) / (f.x1 - f.x0)) * (n - 1));
+    const idx = Math.max(0, Math.min(n - 1, i));
+    cross.setAttribute('x1', X(idx)); cross.setAttribute('x2', X(idx)); cross.setAttribute('opacity', 1);
+    let html = `<b>${xLabels[idx]}</b>`;
+    series.forEach((s, k) => {
+      const v = s.values[idx];
+      dots[k].setAttribute('opacity', v == null ? 0 : 1);
+      if (v == null) return;
+      dots[k].setAttribute('cx', X(idx)); dots[k].setAttribute('cy', Y(v));
+      html += `<div class="row"><i style="background:${s.color}"></i>${s.name}　${invert ? '#' + v : fmt(v)}</div>`;
+    });
+    f.tip.innerHTML = html;
+    f.tip.style.opacity = 1;
+    const tw = f.tip.offsetWidth;
+    f.tip.style.left = Math.max(0, Math.min(X(idx) + 12, f.w - tw - 4)) + 'px';
+    f.tip.style.top = Math.max(0, e.clientY - r.top - 10) + 'px';
+  };
+  const hide = () => { f.tip.style.opacity = 0; cross.setAttribute('opacity', 0); dots.forEach(d => d.setAttribute('opacity', 0)); };
+  hit.addEventListener('mousemove', show);
+  hit.addEventListener('mouseleave', hide);
+  hit.addEventListener('touchstart', e => show(e.touches[0]), { passive: true });
+  hit.addEventListener('touchmove', e => show(e.touches[0]), { passive: true });
+}
+
+/** 分組長條圖：每個 group 一組，組內每個數列一根 */
+function barChart(host, { groups, series, fmt, height = 260 }) {
+  const f = frame(host, { height });
+  const g = groups.length, k = series.length;
+  if (!g || !k) return;
+
+  const hi = Math.max(1, ...series.flatMap(s => s.values));
+  const Y = v => f.y1 - (v / hi) * (f.y1 - f.y0);
+  const bandW = (f.x1 - f.x0) / g;
+  const barW = Math.max(2, (bandW * 0.78) / k - 2);   // 相鄰長條之間留 2px 間隙
+
+  const yTicks = [];
+  for (let i = 0; i <= 4; i++) { const v = (hi * i) / 4; yTicks.push({ y: Y(v), label: fmt(v) }); }
+  axes(f, { yTicks, xTicks: groups.map((lb, i) => ({ x: f.x0 + bandW * (i + 0.5), label: lb })) });
+
+  series.forEach((s, si) => {
+    s.values.forEach((v, gi) => {
+      if (!(v > 0)) return;
+      const x = f.x0 + bandW * gi + bandW * 0.11 + si * (barW + 2);
+      const y = Y(v);
+      const rect = node('rect', { x, y, width: barW, height: Math.max(1, f.y1 - y), rx: Math.min(4, barW / 2), fill: s.color });
+      rect.addEventListener('mouseenter', e => {
+        f.tip.innerHTML = `<b>${groups[gi]}</b><div class="row"><i style="background:${s.color}"></i>${s.name}　${fmt(v)}</div>`;
+        f.tip.style.opacity = 1;
+        const r = f.svg.getBoundingClientRect();
+        f.tip.style.left = Math.max(0, Math.min(x - 10, f.w - f.tip.offsetWidth - 4)) + 'px';
+        f.tip.style.top = Math.max(0, y - 44) + 'px';
+      });
+      rect.addEventListener('mouseleave', () => { f.tip.style.opacity = 0; });
+      f.svg.append(rect);
+    });
+  });
+}
+
+// --- 畫面 ---
+function selectedClans() {
+  return state.selected
+    .map(n => state.series.clans.find(c => c.name === n))
+    .filter(Boolean)
+    .map(c => ({ ...c, color: colorOf(c.name) }));
+}
+
+function renderPicker() {
+  const q = el('search').value.trim().toLowerCase();
+  el('opts').innerHTML = '';
+  for (const c of state.series.clans) {
+    if (q && !c.name.toLowerCase().includes(q)) continue;
+    const lb = document.createElement('label');
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = state.selected.includes(c.name);
+    box.onchange = () => toggle(c.name);
+    const rk = document.createElement('span');
+    rk.className = 'rk';
+    rk.textContent = c.finalRank ? `#${c.finalRank}` : '–';
+    lb.append(box, rk, document.createTextNode(c.name));
+    el('opts').append(lb);
+  }
+
+  const chips = document.createElement('div');
+  chips.className = 'chips';
+  for (const c of selectedClans()) {
+    const chip = document.createElement('button');
+    chip.className = 'chip';
+    chip.title = '移除';
+    chip.onclick = () => toggle(c.name);
+    const dot = document.createElement('span');
+    dot.className = 'dot';
+    dot.style.background = c.color;
+    const x = document.createElement('span');
+    x.className = 'x';
+    x.textContent = '×';
+    chip.append(dot, document.createTextNode(c.name), x);
+    chips.append(chip);
+  }
+  const old = document.querySelector('.bar .chips');
+  if (old) old.remove();
+  document.querySelector('.bar').append(chips);
+}
+
+function renderCards(clans) {
+  const days = new Map(clans.map(c => [c.name, dailyTotals(c.points)]));
+  const complete = completedDays(state.series.stamps);
+  el('cards').innerHTML = '';
+  for (const c of clans) {
+    const lap = lapOf(c.finalScore, state.battle);
+    const est = hitEstimate(days.get(c.name), { complete });
+    const card = document.createElement('div');
+    card.className = 'sum';
+    card.style.borderLeftColor = c.color;
+    const dl = [];
+    dl.push(['推估周目', lap ? `第 ${lap.lap} 周 ${(lap.progress * 100).toFixed(0)}%` : '—（對照表沒有這期）']);
+    const last = days.get(c.name).at(-1);
+    if (last) dl.push([`${Number(last.day.slice(4, 6))}/${Number(last.day.slice(6))} 得分`, 億(last.total)]);
+    if (est) {
+      dl.push(['每刀均分（推估）', 億(est.perHit)]);
+      if (est.used != null) dl.push(['當日推估已用', `${est.used} 刀 / 剩 ${Math.max(0, est.left)}`]);
+    }
+    card.innerHTML =
+      `<div class="nm"><span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${c.color}"></span>` +
+      `${c.finalRank ? '#' + c.finalRank : '已掉出前 150'} ${c.name}</div><div class="big">${億(c.finalScore)}</div>` +
+      `<dl>${dl.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>`;
+    el('cards').append(card);
+  }
+}
+
+function renderCharts(clans) {
+  const stamps = state.series.stamps;
+  const labels = stamps.map(shortTime);
+  const byTs = c => new Map(c.points.map(p => [p.ts, p]));
+  const legendData = clans.map(c => ({ name: c.name, color: c.color }));
+  for (const id of ['lg-rank', 'lg-score', 'lg-daily', 'lg-hour']) legend(el(id), clans.length > 1 ? legendData : []);
+
+  lineChart(el('c-rank'), {
+    series: clans.map(c => { const m = byTs(c); return { name: c.name, color: c.color, values: stamps.map(t => m.get(t)?.rank ?? null) }; }),
+    xLabels: labels, fmt: v => `#${Math.round(v)}`, invert: true, cap: 0.95
+  });
+
+  const gain = state.scoreMode === 'gain';
+  el('score-title').textContent = gain ? '每 30 分鐘的分數' : '累積分數';
+  el('score-sub').textContent = gain ? '相鄰兩筆快照的差，等於這半小時打了多少' : '整期累積的總分';
+  lineChart(el('c-score'), {
+    series: clans.map(c => {
+      if (!gain) { const m = byTs(c); return { name: c.name, color: c.color, values: stamps.map(t => m.get(t)?.score ?? null) }; }
+      const m = new Map(deltaPoints(c.points).map(d => [d.ts, d.gain]));
+      return { name: c.name, color: c.color, values: stamps.map(t => m.get(t) ?? null) };
+    }),
+    xLabels: labels, fmt: v => 億短(v) + ' 億'
+  });
+
+  const dayList = [...new Set(clans.flatMap(c => dailyTotals(c.points).map(d => d.day)))].sort();
+  barChart(el('c-daily'), {
+    groups: dayList.map(d => `${Number(d.slice(4, 6))}/${Number(d.slice(6))}`),
+    series: clans.map(c => {
+      const m = new Map(dailyTotals(c.points).map(d => [d.day, d.total]));
+      return { name: c.name, color: c.color, values: dayList.map(d => m.get(d) ?? 0) };
+    }),
+    fmt: v => 億短(v) + ' 億'
+  });
+
+  el('daily-note').textContent = clans.some(c => dailyTotals(c.points)[0]?.partial)
+    ? '第一天不列：這個月的快照是從戰隊戰中途才開始收的，那天的數字會是整期累積而不是單日分數。'
+    : '';
+
+  const paces = clans.map(c => ({ name: c.name, color: c.color, pace: hourlyPace(c.points) }));
+  const hours = paces[0]?.pace.map(p => p.hour) ?? [];
+  lineChart(el('c-hour'), {
+    series: paces.map(p => ({ name: p.name, color: p.color, values: p.pace.map(x => x.total) })),
+    xLabels: hours.map(h => `${h}時`), fmt: v => 億短(v) + ' 億', height: 230
+  });
+
+  el('hour-table').hidden = !state.showHourTable;
+  el('hourTable').textContent = state.showHourTable ? '收起數值' : '顯示數值';
+  if (state.showHourTable) {
+    el('hour-table').innerHTML =
+      `<table><thead><tr><th class="l">戰隊</th>${hours.map(h => `<th>${h}時</th>`).join('')}</tr></thead>` +
+      `<tbody>${paces.map(p => `<tr><td class="l">${p.name}</td>${p.pace.map(x => `<td>${x.total ? 億短(x.total) : '–'}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+  }
+}
+
+function renderTable() {
+  const all = state.series.clans;
+  const clans = state.onlyFinal ? all.filter(c => c.inFinal) : all;
+  const dayList = [...new Set(clans.flatMap(c => dailyTotals(c.points).map(d => d.day)))].sort();
+  const rows = clans.map((c, i) => {
+    const days = new Map(dailyTotals(c.points).map(d => [d.day, d.total]));
+    const lap = lapOf(c.finalScore, state.battle);
+    const above = clans[i - 1];
+    return {
+      name: c.name, rank: c.finalRank, inFinal: c.inFinal, score: c.finalScore,
+      lap: lap ? lap.lap + lap.progress : null,
+      lapText: lap ? `${lap.lap} 周 ${(lap.progress * 100).toFixed(0)}%` : '–',
+      days: dayList.map(d => days.get(d) ?? 0),
+      gap: above ? above.finalScore - c.finalScore : null
+    };
+  });
+
+  const cols = [
+    { key: 'rank', label: '#', get: r => r.rank ?? 9999, fmt: r => r.rank ?? '–' },
+    { key: 'name', label: '戰隊', get: r => r.name, cls: 'l', fmt: null },
+    { key: 'score', label: '總分', get: r => r.score, fmt: r => 億(r.score), desc: true },
+    { key: 'lap', label: '推估周目', get: r => r.lap ?? -1, fmt: r => r.lapText, desc: true },
+    ...dayList.map((d, i) => ({
+      key: 'd' + i, label: `${Number(d.slice(4, 6))}/${Number(d.slice(6))}`,
+      get: r => r.days[i], fmt: r => r.days[i] ? 億短(r.days[i]) : '–', desc: true
+    })),
+    { key: 'gap', label: '與前一名差', get: r => r.gap ?? Infinity, fmt: r => r.gap == null ? '–' : 億短(r.gap) }
+  ];
+
+  const col = cols.find(c => c.key === state.sort.key) ?? cols[0];
+  const dir = state.sort.desc ? -1 : 1;
+  rows.sort((a, b) => {
+    const x = col.get(a), y = col.get(b);
+    return (typeof x === 'string' ? String(x).localeCompare(String(y)) : x - y) * dir;
+  });
+
+  const thead = el('table').querySelector('thead');
+  thead.innerHTML = '';
+  const tr = document.createElement('tr');
+  for (const c of cols) {
+    const th = document.createElement('th');
+    th.textContent = c.label + (state.sort.key === c.key ? (state.sort.desc ? ' ↓' : ' ↑') : '');
+    if (c.cls) th.className = c.cls;
+    th.onclick = () => {
+      if (state.sort.key === c.key) state.sort.desc = !state.sort.desc;
+      else state.sort = { key: c.key, desc: Boolean(c.desc) };
+      renderTable();
+    };
+    tr.append(th);
+  }
+  thead.append(tr);
+
+  const tbody = el('table').querySelector('tbody');
+  tbody.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  for (const r of rows) {
+    const line = document.createElement('tr');
+    if (state.selected.includes(r.name)) line.className = 'on';
+    for (const c of cols) {
+      const td = document.createElement('td');
+      if (c.cls) td.className = c.cls;
+      if (c.key === 'name') {
+        const span = document.createElement('span');
+        span.className = 'nmcell';
+        const dot = document.createElement('span');
+        dot.className = 'dot';
+        dot.style.background = state.selected.includes(r.name) ? colorOf(r.name) : 'var(--line)';
+        span.append(dot, document.createTextNode(r.name));
+        span.onclick = () => toggle(r.name);
+        td.append(span);
+      } else td.textContent = c.fmt(r);
+      line.append(td);
+    }
+    frag.append(line);
+  }
+  tbody.append(frag);
+  const dropped = all.length - all.filter(c => c.inFinal).length;
+  el('tableNote').textContent = `每日分數單位：億　顯示 ${rows.length} 隊` +
+    (dropped ? `（另有 ${dropped} 隊中途掉出前 150）` : '');
+}
+
+function render() {
+  if (!state.series) { el('cards').innerHTML = ''; return; }
+  const stamps = state.series.stamps;
+  const battleText = state.battle
+    ? `周目對照：第 ${state.battle.id} 期`
+    : '這一期還沒有周目對照表（master.db 要更新）';
+  const onBoard = state.series.clans.filter(c => c.inFinal).length;
+  el('meta').textContent =
+    `${shortTime(stamps[0])} ~ ${shortTime(stamps.at(-1))}　${stamps.length} 筆快照　最後上榜 ${onBoard} 隊　${battleText}`;
+
+  const clans = selectedClans();
+  renderPicker();
+  renderCards(clans);
+  renderCharts(clans);
+  renderTable();
+}
+
+// --- 事件 ---
+el('month').onchange = async e => { state.month = e.target.value; await loadMonth(); };
+el('reset').onclick = () => {
+  state.selected = state.series.clans.slice(0, MAX_SERIES).map(c => c.name);
+  assignColors(); save(); render();
+};
+el('pickBtn').onclick = e => { e.stopPropagation(); el('pickList').classList.toggle('open'); el('search').focus(); };
+el('pickList').onclick = e => e.stopPropagation();
+document.addEventListener('click', () => el('pickList').classList.remove('open'));
+el('search').oninput = () => renderPicker();
+el('score-mode').onclick = e => {
+  const m = e.target.dataset?.m;
+  if (!m) return;
+  state.scoreMode = m;
+  for (const b of el('score-mode').children) b.classList.toggle('on', b.dataset.m === m);
+  render();
+};
+el('hourTable').onclick = () => { state.showHourTable = !state.showHourTable; render(); };
+el('onlyFinal').onchange = e => { state.onlyFinal = e.target.checked; renderTable(); };
+
+let resizeTimer;
+new ResizeObserver(() => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { if (state.series) renderCharts(selectedClans()); }, 120);
+}).observe(document.body);
+
+boot();
+</script>
+</body>
+</html>
