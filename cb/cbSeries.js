@@ -78,27 +78,56 @@ export function deltaPoints(points) {
  * 每個戰隊戰日的得分 = 當日最後一筆 - 前一日最後一筆。
  * @returns {Array<{day, total, end}>} end 是當日結束時的累積分數
  */
-export function dailyTotals(points) {
-    const lastOfDay = new Map();
-    for (const p of points) lastOfDay.set(battleDay(p.ts), p.score);
-    const days = [...lastOfDay.keys()].sort();
+/** 這一筆距離當天開始（早上 5 點）幾分鐘 */
+function minutesIntoDay(ts) {
+    const { hour, min } = parseStamp(ts);
+    return ((hour - BATTLE_DAY_START + 24) % 24) * 60 + min;
+}
 
-    // 資料若是從戰隊戰中途才開始收，第一筆就已經有一大包累積分數，
-    // 那一天的「單日分數」算出來會是整期累積，會誤導 —— 寧可不給。
-    // 從頭收的話開打當下分數接近 0，所以拿第一筆跟整期最後的總分比最準。
-    const first = points[0]?.score ?? 0;
-    const last = points[points.length - 1]?.score ?? 0;
-    const partialFirst = last > 0 && first > last * 0.03;
+export function dailyTotals(points) {
+    const firstStamp = new Map(), lastOfDay = new Map();
+    for (const p of points) {
+        const day = battleDay(p.ts);
+        if (!firstStamp.has(day)) firstStamp.set(day, p.ts);
+        lastOfDay.set(day, p.score);
+    }
+    const days = [...lastOfDay.keys()].sort();
 
     let prev = 0;
     return days.map((day, i) => {
         const end = lastOfDay.get(day);
-        const row = i === 0 && partialFirst
-            ? { day, total: null, end, partial: true }
-            : { day, total: end - prev, end };
+        // 分數變少 = 下一期開打歸零重算，那天是從 0 開始打的
+        const reset = end < prev;
+        const baseline = i === 0 || reset ? 0 : prev;
         prev = end;
-        return row;
+
+        // 從 0 起算的那天，如果第一筆快照離 5 點太久，代表前面那段沒收到
+        // （bot 當時沒在跑，或這期其實更早就開打了）。算出來的「單日分數」
+        // 會把沒收到的那段也算進去，寧可不給。
+        if (baseline === 0 && minutesIntoDay(firstStamp.get(day)) > 120) {
+            return { day, total: null, end, partial: true };
+        }
+        return reset ? { day, total: end, end, reset: true } : { day, total: end - baseline, end };
     });
+}
+
+/**
+ * 真的有在打的日子。
+ *
+ * 月檔裡也有非戰隊戰期間的快照，那時排名凍結、分數完全不動；
+ * 把全部戰隊加起來沒有任何得分的日子濾掉，圖表與表格才不會被一堆空欄塞滿。
+ * @param {Array<{points}>} clans buildSeries 的結果
+ * @returns {string[]} 'yyyyMMdd'，由舊到新
+ */
+export function activeDays(clans) {
+    const sum = new Map();
+    for (const c of clans ?? []) {
+        for (const d of dailyTotals(c.points)) {
+            if (!(d.total > 0)) continue;
+            sum.set(d.day, (sum.get(d.day) ?? 0) + d.total);
+        }
+    }
+    return [...sum.keys()].sort();
 }
 
 /** 一天的時段順序：5 點到隔天 4 點 */
@@ -114,11 +143,41 @@ export function hourlyPace(points) {
     const sum = new Map(dayHours().map(h => [h, { hour: h, total: 0, samples: 0 }]));
     for (const { ts, gain } of deltaPoints(points)) {
         const slot = sum.get(parseStamp(ts).hour);
-        if (!slot) continue;
+        // 負的增量只會來自「下一期開打分數歸零」，不是真的在這個時段打了負分
+        if (!slot || gain < 0) continue;
         slot.total += gain;
         slot.samples++;
     }
     return dayHours().map(h => sum.get(h));
+}
+
+/** 只留下指定戰隊戰日的快照 */
+export function pointsIn(points, days) {
+    const set = new Set(days ?? []);
+    return (points ?? []).filter(p => set.has(battleDay(p.ts)));
+}
+
+/** 'yyyyMMdd' 的前一天 */
+function prevDay(day) {
+    const d = new Date(Date.UTC(+day.slice(0, 4), +day.slice(4, 6) - 1, +day.slice(6)));
+    d.setUTCDate(d.getUTCDate() - 1);
+    const p = n => String(n).padStart(2, '0');
+    return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}`;
+}
+
+/**
+ * 跟開打日連在一起的「資料不完整」日子。
+ *
+ * 月檔裡非戰隊戰期間也會有零星的不完整日（bot 重啟之類），那些跟這次開打無關，
+ * 報出來只是雜訊；只有緊接在開打日之前的那幾天才是「這次漏收的」。
+ */
+export function adjacentPartialDays(partialDays, days) {
+    const first = days?.[0];
+    if (!first || !partialDays?.length) return [];
+    const set = new Set(partialDays);
+    const out = [];
+    for (let day = prevDay(first); set.has(day); day = prevDay(day)) out.unshift(day);
+    return out;
 }
 
 /**
@@ -151,13 +210,15 @@ export function lapOf(score, table) {
  * 已經打完的天數（進行中的那天不算）。
  * 一天到 23:50 收完最後一筆才算結束 —— 刀數推估要靠完整的一天當基準。
  */
-export function completedDays(stamps) {
+export function completedDays(stamps, days) {
     if (!stamps?.length) return 0;
-    const days = [...new Set(stamps.map(battleDay))].sort();
-    const last = stamps[stamps.length - 1];
-    const { hour, min } = parseStamp(last);
-    const lastDayDone = hour === 23 && min >= 50;
-    return lastDayDone ? days.length : days.length - 1;
+    const list = days ?? [...new Set(stamps.map(battleDay))].sort();
+    if (!list.length) return 0;
+    const lastDay = list[list.length - 1];
+    const lastStamp = [...stamps].reverse().find(t => battleDay(t) === lastDay);
+    if (!lastStamp) return list.length;
+    const { hour, min } = parseStamp(lastStamp);
+    return hour === 23 && min >= 50 ? list.length : list.length - 1;
 }
 
 /**
@@ -166,10 +227,12 @@ export function completedDays(stamps) {
  * @param {{battles: Array}} laps
  */
 export function battleFor(stamps, laps) {
-    const first = stamps?.[0];
-    if (!first || !laps?.battles) return null;
+    // 看最後一筆：月檔常常跨到上一期的尾巴（非戰隊戰期間排名凍結），
+    // 用第一筆會對到上一期，王血量不同、周目就算錯了
+    const last = stamps?.[stamps.length - 1];
+    if (!last || !laps?.battles) return null;
     return laps.battles.find(b => b.startStamp && b.endStamp &&
-        b.startStamp <= first && first <= b.endStamp) ?? null;
+        b.startStamp <= last && last <= b.endStamp) ?? null;
 }
 
 /**

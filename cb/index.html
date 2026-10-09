@@ -197,7 +197,7 @@
 <script type="module">
 import {
   buildSeries, deltaPoints, dailyTotals, hourlyPace, lapOf, hitEstimate,
-  battleFor, battleDay, shortTime, parseStamp, completedDays
+  battleFor, battleDay, shortTime, activeDays, completedDays, pointsIn, adjacentPartialDays
 } from './cbSeries.js';
 
 const SERVERS = [{ key: '1', label: '美食（一服）' }, { key: '2', label: '合服（二服）' }];
@@ -284,6 +284,17 @@ async function loadMonth() {
   }
   state.series = buildSeries(state.data);
   state.battle = battleFor(state.series.stamps, state.laps);
+  // 月檔包含非戰隊戰期間（排名凍結）的快照，圖表只看真的有在打的那幾天
+  state.days = activeDays(state.series.clans);
+  state.stamps = state.series.stamps.filter(t => state.days.includes(battleDay(t)));
+  state.complete = completedDays(state.series.stamps, state.days);
+  state.daily = new Map(state.series.clans.map(c =>
+    [c.name, dailyTotals(c.points).filter(d => state.days.includes(d.day))]));
+  // 開打了但資料不完整（bot 當時沒在跑）的日子：不列進圖表，但要講出來
+  const partial = [...new Set(state.series.clans
+    .flatMap(c => dailyTotals(c.points).filter(d => d.partial).map(d => d.day)))]
+    .filter(d => !state.days.includes(d)).sort();
+  state.partialDays = adjacentPartialDays(partial, state.days);
 
   // 選擇記在瀏覽器裡；隊名對不上（換月份、隊伍改名）就退回前 8 名
   let saved = [];
@@ -546,18 +557,16 @@ function renderPicker() {
 }
 
 function renderCards(clans) {
-  const days = new Map(clans.map(c => [c.name, dailyTotals(c.points)]));
-  const complete = completedDays(state.series.stamps);
   el('cards').innerHTML = '';
   for (const c of clans) {
     const lap = lapOf(c.finalScore, state.battle);
-    const est = hitEstimate(days.get(c.name), { complete });
+    const est = hitEstimate(state.daily.get(c.name), { complete: state.complete });
     const card = document.createElement('div');
     card.className = 'sum';
     card.style.borderLeftColor = c.color;
     const dl = [];
     dl.push(['推估周目', lap ? `第 ${lap.lap} 周 ${(lap.progress * 100).toFixed(0)}%` : '—（對照表沒有這期）']);
-    const last = days.get(c.name).at(-1);
+    const last = state.daily.get(c.name).at(-1);
     if (last) dl.push([`${Number(last.day.slice(4, 6))}/${Number(last.day.slice(6))} 得分`, 億(last.total)]);
     if (est) {
       dl.push(['每刀均分（推估）', 億(est.perHit)]);
@@ -572,7 +581,7 @@ function renderCards(clans) {
 }
 
 function renderCharts(clans) {
-  const stamps = state.series.stamps;
+  const stamps = state.stamps;
   const labels = stamps.map(shortTime);
   const byTs = c => new Map(c.points.map(p => [p.ts, p]));
   const legendData = clans.map(c => ({ name: c.name, color: c.color }));
@@ -595,21 +604,23 @@ function renderCharts(clans) {
     xLabels: labels, fmt: v => 億短(v) + ' 億'
   });
 
-  const dayList = [...new Set(clans.flatMap(c => dailyTotals(c.points).map(d => d.day)))].sort();
+  const dayList = state.days;
   barChart(el('c-daily'), {
     groups: dayList.map(d => `${Number(d.slice(4, 6))}/${Number(d.slice(6))}`),
     series: clans.map(c => {
-      const m = new Map(dailyTotals(c.points).map(d => [d.day, d.total]));
+      const m = new Map(state.daily.get(c.name).map(d => [d.day, d.total]));
       return { name: c.name, color: c.color, values: dayList.map(d => m.get(d) ?? 0) };
     }),
     fmt: v => 億短(v) + ' 億'
   });
 
-  el('daily-note').textContent = clans.some(c => dailyTotals(c.points)[0]?.partial)
-    ? '第一天不列：這個月的快照是從戰隊戰中途才開始收的，那天的數字會是整期累積而不是單日分數。'
+  const md = d => `${Number(d.slice(4, 6))}/${Number(d.slice(6))}`;
+  el('daily-note').textContent = state.partialDays.length
+    ? `${state.partialDays.map(md).join('、')} 沒有列出來：那天的快照是從中途才開始收的（bot 當時沒在跑），` +
+      '算出來會把沒收到的那段也算進去。'
     : '';
 
-  const paces = clans.map(c => ({ name: c.name, color: c.color, pace: hourlyPace(c.points) }));
+  const paces = clans.map(c => ({ name: c.name, color: c.color, pace: hourlyPace(pointsIn(c.points, state.days)) }));
   const hours = paces[0]?.pace.map(p => p.hour) ?? [];
   lineChart(el('c-hour'), {
     series: paces.map(p => ({ name: p.name, color: p.color, values: p.pace.map(x => x.total) })),
@@ -628,9 +639,9 @@ function renderCharts(clans) {
 function renderTable() {
   const all = state.series.clans;
   const clans = state.onlyFinal ? all.filter(c => c.inFinal) : all;
-  const dayList = [...new Set(clans.flatMap(c => dailyTotals(c.points).map(d => d.day)))].sort();
+  const dayList = state.days;
   const rows = clans.map((c, i) => {
-    const days = new Map(dailyTotals(c.points).map(d => [d.day, d.total]));
+    const days = new Map(state.daily.get(c.name).map(d => [d.day, d.total]));
     const lap = lapOf(c.finalScore, state.battle);
     const above = clans[i - 1];
     return {
@@ -708,13 +719,15 @@ function renderTable() {
 
 function render() {
   if (!state.series) { el('cards').innerHTML = ''; return; }
-  const stamps = state.series.stamps;
+  const stamps = state.stamps.length ? state.stamps : state.series.stamps;
   const battleText = state.battle
     ? `周目對照：第 ${state.battle.id} 期`
     : '這一期還沒有周目對照表（master.db 要更新）';
   const onBoard = state.series.clans.filter(c => c.inFinal).length;
+  const frozen = state.series.stamps.length - stamps.length;
   el('meta').textContent =
-    `${shortTime(stamps[0])} ~ ${shortTime(stamps.at(-1))}　${stamps.length} 筆快照　最後上榜 ${onBoard} 隊　${battleText}`;
+    `${shortTime(stamps[0])} ~ ${shortTime(stamps.at(-1))}　開打 ${state.days.length} 天 / ${stamps.length} 筆快照　` +
+    `最後上榜 ${onBoard} 隊　${battleText}` + (frozen > 0 ? `　（另有 ${frozen} 筆是非戰隊戰期間的凍結資料，未列入）` : '');
 
   const clans = selectedClans();
   renderPicker();
