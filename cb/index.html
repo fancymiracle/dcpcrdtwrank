@@ -533,8 +533,9 @@ function dotChart(host, { groups, series, fmt, height = 260, bounds }) {
  * 傳 bounds 進來就是「軸有截斷」的版本（長度不是從 0 起算，差距才看得出來），
  * 這時會在底部畫鋸齒提醒 —— 截斷的長條會誇大差距，不能拿長度去比倍數。
  */
-function barChart(host, { groups, series, fmt, height = 260, bounds }) {
-  const f = frame(host, { height });
+function barChart(host, { groups, series, fmt, label, height = 260, bounds }) {
+  // 長條上要寫數值，頂端留空間（窄的時候數字會轉成直的）
+  const f = frame(host, { height, pad: { t: 34, r: 14, b: 26, l: 62 } });
   const g = groups.length, k = series.length;
   if (!g || !k) return;
 
@@ -564,6 +565,26 @@ function barChart(host, { groups, series, fmt, height = 260, bounds }) {
       });
       rect.addEventListener('mouseleave', () => { f.tip.style.opacity = 0; });
       f.svg.append(rect);
+
+      // 數值寫在長條上方；長條太窄放不下就把字轉成直的
+      if (!label || barW < 6) return;
+      const text = label(v);
+      const size = 10;
+      const cx = x + barW / 2;
+      const t = node('text', { fill: 'var(--dim)', 'font-size': size, 'font-variant-numeric': 'tabular-nums' });
+      t.textContent = text;
+      if (text.length * size * 0.62 <= barW) {
+        t.setAttribute('x', cx);
+        t.setAttribute('y', y - 4);
+        t.setAttribute('text-anchor', 'middle');
+      } else {
+        t.setAttribute('x', cx);
+        t.setAttribute('y', y - 5);
+        t.setAttribute('text-anchor', 'start');
+        t.setAttribute('transform', `rotate(-90 ${cx} ${y - 5})`);
+        t.setAttribute('dominant-baseline', 'central');
+      }
+      f.svg.append(t);
     });
   });
 
@@ -677,7 +698,8 @@ function renderCharts(clans) {
       const m = new Map(state.daily.get(c.name).map(d => [d.day, d.total]));
       return { name: c.name, color: c.color, values: dayList.map(d => m.get(d) ?? 0) };
     }),
-    fmt: v => 億短(v) + ' 億'
+    fmt: v => 億短(v) + ' 億',
+    label: v => 億短(v)            // 軸上已經寫了單位，長條上只標數字
   };
   const vals = dailyOpts.series.flatMap(s => s.values).filter(v => v > 0);
   const bounds = vals.length ? niceBounds(Math.min(...vals), Math.max(...vals)) : null;
