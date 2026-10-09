@@ -221,6 +221,31 @@ export function completedDays(stamps, days) {
     return hour === 23 && min >= 50 ? list.length : list.length - 1;
 }
 
+/** 1、2、5 的倍數當刻度間距 */
+function niceStep(raw) {
+    const mag = 10 ** Math.floor(Math.log10(raw));
+    const n = raw / mag;
+    return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * mag;
+}
+
+/**
+ * 放大後的軸範圍：包得住資料、刻度落在整數上，而且資料佔掉大半個高度。
+ * 給點狀圖用 —— 點是用位置表示數值，軸不必從 0 開始；
+ * 長條圖不能這樣（長度一定要從 0 起算，不然差距會看起來被放大）。
+ */
+export function niceBounds(min, max, ticks = 4) {
+    let lo = Math.min(min, max), hi = Math.max(min, max);
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) return { lo: 0, hi: 1, step: 1 };
+    if (!(hi > lo)) { const base = Math.abs(hi) || 1; lo = hi - base * 0.1; hi += base * 0.1; }
+
+    const pad = (hi - lo) * 0.12;
+    lo -= pad; hi += pad;
+    if (lo < 0 && min >= 0) lo = 0;
+
+    const step = niceStep((hi - lo) / ticks);
+    return { lo: Math.floor(lo / step) * step, hi: Math.ceil(hi / step) * step, step };
+}
+
 /**
  * 這個月的快照屬於哪一期公會戰（laps.json 來自 master.db，可能還沒有最新一期）。
  * @param {string[]} stamps 快照時間

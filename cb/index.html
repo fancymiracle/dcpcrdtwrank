@@ -156,7 +156,15 @@
   </section>
 
   <section class="card">
-    <div class="head"><div><h2>每日總分</h2><div class="sub">以遊戲的早上 5 點換日</div></div><div class="legend" id="lg-daily"></div></div>
+    <div class="head">
+      <div><h2>每日總分</h2><div class="sub" id="daily-sub">以遊戲的早上 5 點換日</div></div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <div class="tabs" id="daily-mode">
+          <button data-m="dot" class="on" title="軸放大，差距看得清楚">點狀</button><button data-m="bar" title="長度從 0 起算">長條</button>
+        </div>
+        <div class="legend" id="lg-daily"></div>
+      </div>
+    </div>
     <div class="plot" id="c-daily"></div>
     <div class="note" id="daily-note"></div>
   </section>
@@ -197,7 +205,7 @@
 <script type="module">
 import {
   buildSeries, deltaPoints, dailyTotals, hourlyPace, lapOf, hitEstimate,
-  battleFor, battleDay, shortTime, activeDays, completedDays, pointsIn, adjacentPartialDays
+  battleFor, battleDay, shortTime, activeDays, completedDays, pointsIn, adjacentPartialDays, niceBounds
 } from './cbSeries.js';
 
 const SERVERS = [{ key: '1', label: '美食（一服）' }, { key: '2', label: '合服（二服）' }];
@@ -211,7 +219,7 @@ const state = {
   server: '1', month: null, laps: null, months: {},
   data: null, series: null, battle: null,
   selected: [], colors: new Map(),         // 隊名 -> 色槽（顏色跟著隊伍，不跟著名次）
-  scoreMode: 'cum', showHourTable: false, onlyFinal: true,
+  scoreMode: 'cum', dailyMode: 'dot', showHourTable: false, onlyFinal: true,
   sort: { key: 'rank', desc: false }
 };
 
@@ -476,6 +484,48 @@ function lineChart(host, { series, xLabels, fmt, invert = false, height = 280, y
   hit.addEventListener('touchmove', e => show(e.touches[0]), { passive: true });
 }
 
+/**
+ * 分組點狀圖：每個 group 一組，組內每個數列一點。
+ *
+ * 每日總分都擠在 1800~2400 億，長條從 0 起算的話差距看不出來；
+ * 點是用位置表示數值而不是長度，所以軸可以放大，不會像截斷長條那樣誇大差距。
+ */
+function dotChart(host, { groups, series, fmt, height = 260 }) {
+  const f = frame(host, { height });
+  const g = groups.length, k = series.length;
+  if (!g || !k) return;
+
+  const all = series.flatMap(s => s.values).filter(v => v > 0);
+  const { lo, hi, step } = niceBounds(Math.min(...all), Math.max(...all));
+  const Y = v => f.y1 - ((v - lo) / (hi - lo)) * (f.y1 - f.y0);
+  const bandW = (f.x1 - f.x0) / g;
+  const gap = Math.min(22, (bandW * 0.7) / Math.max(k - 1, 1));
+
+  const yTicks = [];
+  for (let v = lo; v <= hi + step / 2; v += step) yTicks.push({ y: Y(v), label: fmt(v) });
+  axes(f, { yTicks, xTicks: groups.map((lb, i) => ({ x: f.x0 + bandW * (i + 0.5), label: lb })) });
+
+  series.forEach((s, si) => {
+    s.values.forEach((v, gi) => {
+      if (!(v > 0)) return;
+      const x = f.x0 + bandW * (gi + 0.5) + (si - (k - 1) / 2) * gap;
+      const dot = node('circle', {
+        cx: x, cy: Y(v), r: 5, fill: s.color, stroke: 'var(--panel)', 'stroke-width': 2
+      });
+      // 點只有 10px，滑鼠不好對準，另外疊一個看不見的大判定區
+      const hit = node('circle', { cx: x, cy: Y(v), r: 13, fill: 'transparent' });
+      hit.addEventListener('mouseenter', () => {
+        f.tip.innerHTML = `<b>${groups[gi]}</b><div class="row"><i style="background:${s.color}"></i>${s.name}　${fmt(v)}</div>`;
+        f.tip.style.opacity = 1;
+        f.tip.style.left = Math.max(0, Math.min(x - 10, f.w - f.tip.offsetWidth - 4)) + 'px';
+        f.tip.style.top = Math.max(0, Y(v) - 46) + 'px';
+      });
+      hit.addEventListener('mouseleave', () => { f.tip.style.opacity = 0; });
+      f.svg.append(dot, hit);
+    });
+  });
+}
+
 /** 分組長條圖：每個 group 一組，組內每個數列一根 */
 function barChart(host, { groups, series, fmt, height = 260 }) {
   const f = frame(host, { height });
@@ -605,14 +655,18 @@ function renderCharts(clans) {
   });
 
   const dayList = state.days;
-  barChart(el('c-daily'), {
+  const dailyOpts = {
     groups: dayList.map(d => `${Number(d.slice(4, 6))}/${Number(d.slice(6))}`),
     series: clans.map(c => {
       const m = new Map(state.daily.get(c.name).map(d => [d.day, d.total]));
       return { name: c.name, color: c.color, values: dayList.map(d => m.get(d) ?? 0) };
     }),
     fmt: v => 億短(v) + ' 億'
-  });
+  };
+  (state.dailyMode === 'bar' ? barChart : dotChart)(el('c-daily'), dailyOpts);
+  el('daily-sub').textContent = state.dailyMode === 'bar'
+    ? '以遊戲的早上 5 點換日。長度從 0 起算，所以各隊差距看起來不明顯'
+    : '以遊戲的早上 5 點換日。軸有放大，只看得出相對高低，不要用長度去比倍數';
 
   const md = d => `${Number(d.slice(4, 6))}/${Number(d.slice(6))}`;
   el('daily-note').textContent = state.partialDays.length
@@ -751,6 +805,13 @@ el('score-mode').onclick = e => {
   if (!m) return;
   state.scoreMode = m;
   for (const b of el('score-mode').children) b.classList.toggle('on', b.dataset.m === m);
+  render();
+};
+el('daily-mode').onclick = e => {
+  const m = e.target.dataset?.m;
+  if (!m) return;
+  state.dailyMode = m;
+  for (const b of el('daily-mode').children) b.classList.toggle('on', b.dataset.m === m);
   render();
 };
 el('hourTable').onclick = () => { state.showHourTable = !state.showHourTable; render(); };
