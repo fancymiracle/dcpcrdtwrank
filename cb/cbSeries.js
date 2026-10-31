@@ -294,3 +294,36 @@ export function hitEstimate(days, { hitsPerDay = 90, complete = Math.max(days.le
         left: used == null ? null : Math.round((hitsPerDay - used) * 10) / 10
     };
 }
+
+/**
+ * 分數賽跑（bar chart race）用的對照表：每支戰隊在每個時間點的分數，沒上榜是 NaN。
+ * 動畫每一格都要查，先攤平成陣列，不要每格重建 Map。
+ */
+export function raceTable(clans, stamps) {
+    return {
+        stamps,
+        rows: (clans ?? []).map(c => {
+            const at = new Map(c.points.map(p => [p.ts, p.score]));
+            return { name: c.name, scores: stamps.map(t => at.get(t) ?? NaN) };
+        })
+    };
+}
+
+/**
+ * 時間點 t（可以有小數，1.5 = 第 1、2 筆正中間）的排行。
+ * 兩筆之間線性內插；還沒上榜的不出現，下一筆掉出榜外就停在這一筆的分數。
+ * @returns {Array<{name, score}>} 分數由高到低
+ */
+export function raceFrame(table, t, top = Infinity) {
+    const last = table.stamps.length - 1;
+    const pos = Math.max(0, Math.min(last, t));
+    const i = Math.floor(pos), f = pos - i;
+    const out = [];
+    for (const r of table.rows) {
+        const a = r.scores[i], b = r.scores[i + 1];
+        if (Number.isNaN(a)) continue;
+        out.push({ name: r.name, score: f > 0 && !Number.isNaN(b) ? a + (b - a) * f : a });
+    }
+    out.sort((x, y) => y.score - x.score);
+    return out.slice(0, top);
+}

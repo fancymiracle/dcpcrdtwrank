@@ -45,7 +45,8 @@
   }
   .btn { cursor: pointer; }
   .btn:hover { border-color: var(--accent); }
-  main { padding: 0 16px 40px; display: grid; gap: 14px; }
+  /* minmax(0, …)：不然「全部戰隊」的寬表格會把整欄撐開，手機上整頁變寬 */
+  main { padding: 0 16px 40px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
   .head { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
 
@@ -98,6 +99,11 @@
   .tip .row { display: flex; align-items: center; gap: 6px; }
   .tip .row i { width: 8px; height: 8px; border-radius: 50%; }
 
+  /* 分數賽跑 */
+  .race-ctl { display: flex; gap: 10px; align-items: center; margin-bottom: 6px; }
+  .race-ctl .btn { min-width: 84px; }
+  .race-ctl input[type=range] { flex: 1; min-width: 0; padding: 0; border: 0; background: none; accent-color: var(--accent); }
+
   /* 表 */
   .scroll { overflow: auto; max-height: 70vh; }
   table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
@@ -137,6 +143,23 @@
 
 <main>
   <div id="cards"></div>
+
+  <section class="card">
+    <div class="head">
+      <div><h2>分數賽跑</h2><div class="sub">每 30 分鐘一筆快照，中間用直線補上，超車的瞬間是推估的。有選的戰隊才上色</div></div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <div class="tabs" id="race-speed">
+          <button data-s="1">慢</button><button data-s="2" class="on">中</button><button data-s="5">快</button>
+        </div>
+        <select id="race-top"><option value="10">前 10 名</option><option value="15">前 15 名</option><option value="20">前 20 名</option></select>
+      </div>
+    </div>
+    <div class="race-ctl">
+      <button class="btn" id="race-play" aria-label="播放">▶ 播放</button>
+      <input type="range" id="race-pos" min="0" max="1" step="any" value="0" aria-label="時間">
+    </div>
+    <div class="plot" id="c-race"></div>
+  </section>
 
   <section class="card">
     <div class="head"><div><h2>名次走勢</h2><div class="sub">越上面名次越前</div></div><div class="legend" id="lg-rank"></div></div>
@@ -206,7 +229,8 @@
 <script type="module">
 import {
   buildSeries, deltaPoints, dailyTotals, hourlyPace, lapOf, hitEstimate,
-  battleFor, battleDay, shortTime, activeDays, completedDays, pointsIn, adjacentPartialDays, niceBounds
+  battleFor, battleDay, shortTime, activeDays, completedDays, pointsIn, adjacentPartialDays, niceBounds,
+  raceTable, raceFrame
 } from './cbSeries.js';
 
 const SERVERS = [{ key: '1', label: '美食（一服）' }, { key: '2', label: '合服（二服）' }];
@@ -304,6 +328,7 @@ async function loadMonth() {
     .flatMap(c => dailyTotals(c.points).filter(d => d.partial).map(d => d.day)))]
     .filter(d => !state.days.includes(d)).sort();
   state.partialDays = adjacentPartialDays(partial, state.days);
+  resetRace();
 
   // 選擇記在瀏覽器裡；隊名對不上（換月份、隊伍改名）就退回前 8 名
   let saved = [];
@@ -597,6 +622,168 @@ function barChart(host, { groups, series, fmt, label, height = 260, bounds }) {
   }
 }
 
+/**
+ * 分數賽跑（bar chart race）。
+ *
+ * race.t 是「第幾筆快照」，可以有小數；播放就是讓它隨時間往前走。
+ * 每支戰隊一組 SVG 節點，名次換了不重畫，而是讓它的 y 慢慢滑到新位置，超車才看得出來。
+ */
+const RACE_ROW = 28;
+const RACE_EASE = 4.5;          // 換位滑動的快慢：越小越慢，4.5 大約 0.7 秒滑到定位
+const RACE_ARROW_MS = 1600;     // 名次變動後箭頭留多久
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const race = { t: 0, playing: false, speed: 2, top: 10, table: null, f: null, nodes: new Map(), raf: 0, last: 0 };
+
+function resetRace() {
+  race.playing = false;
+  race.table = raceTable(state.series.clans, state.stamps);
+  race.t = Math.max(0, state.stamps.length - 1);     // 一進來先停在最後，看得到目前的排行
+  el('race-pos').max = race.t;
+  el('race-pos').value = race.t;
+}
+
+/** 重建畫布（換寬度、換名次數時），保留目前播到哪 */
+function renderRace() {
+  const host = el('c-race');
+  if (!race.table || !state.stamps.length) { host.innerHTML = ''; return; }
+  const w = Math.max(host.clientWidth || 640, 320);
+  const nameW = Math.round(Math.min(170, Math.max(110, w * 0.3)));
+  const f = frame(host, { height: race.top * RACE_ROW + 30, pad: { t: 24, r: 62, b: 6, l: nameW } });
+  const clipId = `race-clip-${Math.random().toString(36).slice(2)}`;
+  const clip = node('clipPath', { id: clipId });
+  clip.append(node('rect', { x: 0, y: f.y0, width: f.w, height: race.top * RACE_ROW }));
+  f.grid = node('g');
+  f.bars = node('g', { 'clip-path': `url(#${clipId})` });
+  f.clock = node('text', {
+    x: f.x1 + 60, y: f.y1 - 14, 'text-anchor': 'end', fill: 'var(--dim)', opacity: 0.55,
+    'font-size': Math.min(34, w / 16), 'font-weight': 600, 'font-variant-numeric': 'tabular-nums'
+  });
+  f.day = node('text', { x: f.x1 + 60, y: f.y1 - 14 - Math.min(34, w / 16), 'text-anchor': 'end', fill: 'var(--dim)', opacity: 0.55, 'font-size': 13 });
+  f.svg.append(clip, f.day, f.clock, f.grid, f.bars);   // 時間當浮水印，被長條蓋住也沒關係
+  race.f = f;
+  race.nodes = new Map();
+  drawRace(0, true);
+}
+
+function raceNode(name) {
+  const g = node('g');
+  const rect = node('rect', { height: RACE_ROW - 6, y: 3, rx: 4 });
+  const rank = node('text', { y: RACE_ROW / 2 + 4, 'text-anchor': 'end', fill: 'var(--muted)', 'font-size': 11, 'font-variant-numeric': 'tabular-nums' });
+  const picked = state.selected.includes(name);
+  const label = node('text', { y: RACE_ROW / 2 + 4, 'text-anchor': 'end', 'font-size': 12, 'font-weight': picked ? 600 : 400 });
+  label.style.fill = picked ? 'var(--fg)' : 'var(--dim)';
+  label.textContent = name;
+  const score = node('text', { y: RACE_ROW / 2 + 4, fill: 'var(--dim)', 'font-size': 11, 'font-variant-numeric': 'tabular-nums' });
+  g.append(rect, rank, label, score);
+  race.f.bars.append(g);
+  // 隊名太長就截斷到放得下（左邊還要留給名次 #10）
+  const room = race.f.x0 - 8 - 30;
+  for (let s = name; label.getComputedTextLength() > room && s.length > 1;) {
+    s = s.slice(0, -1);
+    label.textContent = s + '…';
+  }
+  return { g, rect, rank, label, score, y: race.top, value: 0, target: null, move: 0, moveAt: 0 };
+}
+
+/**
+ * 畫一格。dt 是距離上一格幾秒，拿來讓名次換位有滑動感；snap 就直接到定位。
+ * @returns {boolean} 所有隊伍都已經滑到定位
+ */
+function drawRace(dt, snap = false) {
+  const f = race.f;
+  if (!f) return true;
+  const rows = raceFrame(race.table, race.t, race.top);
+  const leader = rows[0]?.score || 1;
+  const X = v => (Math.max(0, v) / leader) * (f.x1 - f.x0);
+
+  // 刻度跟著領先者的分數縮放，間距取 1、2、5 的倍數
+  f.grid.innerHTML = '';
+  const { step } = niceBounds(0, leader, Math.max(3, Math.floor((f.x1 - f.x0) / 80)));
+  for (let v = step; v <= leader; v += step) {
+    const x = f.x0 + X(v);
+    f.grid.append(node('line', { x1: x, x2: x, y1: f.y0, y2: f.y1, stroke: 'var(--grid)', 'stroke-width': 1 }));
+    const t = node('text', { x, y: f.y0 - 8, 'text-anchor': 'middle', fill: 'var(--muted)', 'font-size': 11 });
+    t.textContent = 億短(v) + ' 億';
+    f.grid.append(t);
+  }
+
+  const now = performance.now();
+  const seen = new Set();
+  rows.forEach((r, k) => {
+    seen.add(r.name);
+    let n = race.nodes.get(r.name);
+    if (!n) { n = raceNode(r.name); race.nodes.set(r.name, n); }
+    // 名次一變就記下往哪邊、什麼時候，接下來一段時間標箭頭；
+    // 往上爬的移到最上層畫，超車時是它蓋過別人，一眼看得出是誰在爬
+    if (!snap && k !== n.target) {
+      n.move = n.target == null || k < n.target ? 1 : -1;   // 剛擠進前幾名也算往上
+      n.moveAt = now;
+      if (n.move > 0) f.bars.append(n.g);
+    }
+    n.target = k;
+    n.value = r.score;
+  });
+
+  const ease = snap || reduceMotion ? 1 : Math.min(1, dt * RACE_EASE);
+  let settled = true;
+  for (const [name, n] of race.nodes) {
+    if (!seen.has(name)) n.target = race.top;        // 掉出前幾名：往下滑出去
+    n.y += (n.target - n.y) * ease;
+    if (Math.abs(n.target - n.y) < 0.005) n.y = n.target;
+    else settled = false;
+    if (!seen.has(name) && n.y === n.target) { n.g.remove(); race.nodes.delete(name); continue; }
+
+    const picked = state.selected.includes(name);
+    const bw = X(n.value);
+    n.g.setAttribute('transform', `translate(0 ${(f.y0 + n.y * RACE_ROW).toFixed(1)})`);
+    n.g.setAttribute('opacity', Math.max(0, Math.min(1, race.top - n.y)).toFixed(2));
+    n.rect.setAttribute('x', f.x0);
+    n.rect.setAttribute('width', Math.max(1, bw).toFixed(1));
+    n.rect.style.fill = picked ? colorOf(name) : 'color-mix(in srgb, var(--dim) 38%, var(--panel))';
+    n.label.setAttribute('x', f.x0 - 8);
+    n.rank.setAttribute('x', f.x0 - 8 - n.label.getComputedTextLength() - 6);
+    // 名次剛變動：# 換成箭頭，紅漲綠跌（台灣股市的習慣）
+    const moving = seen.has(name) && n.move && now - n.moveAt < RACE_ARROW_MS ? n.move : 0;
+    if (moving) settled = false;                      // 箭頭還要收掉，動畫不能先停
+    const mark = moving > 0 ? '▲' : moving < 0 ? '▼' : '#';
+    n.rank.textContent = seen.has(name) ? `${mark}${n.target + 1}` : '';
+    n.rank.style.fill = moving > 0 ? 'var(--s8)' : moving < 0 ? 'var(--s3)' : '';
+    n.rank.style.fontWeight = moving ? 700 : '';
+    n.score.setAttribute('x', f.x0 + bw + 6);
+    n.score.textContent = 億短(n.value) + ' 億';
+  }
+
+  const ts = state.stamps[Math.round(Math.min(race.t, state.stamps.length - 1))];
+  f.clock.textContent = shortTime(ts);
+  const day = state.days.indexOf(battleDay(ts));
+  f.day.textContent = day >= 0 ? `第 ${day + 1} 天` : '';
+  return settled;
+}
+
+function raceLoop(now) {
+  const dt = Math.min(0.1, (now - race.last) / 1000);
+  race.last = now;
+  const end = state.stamps.length - 1;
+  if (race.playing) {
+    race.t = Math.min(end, race.t + dt * race.speed);
+    if (race.t >= end) { race.playing = false; raceButton(); }
+    el('race-pos').value = race.t;
+  }
+  const settled = drawRace(dt);
+  race.raf = race.playing || !settled ? requestAnimationFrame(raceLoop) : 0;
+}
+
+function kickRace() {
+  if (race.raf) return;
+  race.last = performance.now();
+  race.raf = requestAnimationFrame(raceLoop);
+}
+
+function raceButton() {
+  el('race-play').textContent = race.playing ? '❚❚ 暫停' : '▶ 播放';
+  el('race-play').setAttribute('aria-label', race.playing ? '暫停' : '播放');
+}
+
 // --- 畫面 ---
 function selectedClans() {
   return state.selected
@@ -668,6 +855,7 @@ function renderCards(clans) {
 }
 
 function renderCharts(clans) {
+  renderRace();
   const stamps = state.stamps;
   const labels = stamps.map(shortTime);
   const byTs = c => new Map(c.points.map(p => [p.ts, p]));
@@ -865,7 +1053,27 @@ el('daily-mode').onclick = e => {
   for (const b of el('daily-mode').children) b.classList.toggle('on', b.dataset.m === m);
   render();
 };
-el('hourTable').onclick = () => { state.showHourTable = !state.showHourTable; render(); };
+el('race-play').onclick = () => {
+  const end = state.stamps.length - 1;
+  if (end < 1) return;
+  if (!race.playing && race.t >= end) {               // 播完再按就從頭開始
+    race.t = 0;
+    el('race-pos').value = 0;
+    renderRace();
+  }
+  race.playing = !race.playing;
+  raceButton();
+  kickRace();
+};
+el('race-pos').oninput = e => { race.t = Number(e.target.value); kickRace(); };
+el('race-speed').onclick = e => {
+  const s = Number(e.target.dataset?.s);
+  if (!s) return;
+  race.speed = s;
+  for (const b of el('race-speed').children) b.classList.toggle('on', Number(b.dataset.s) === s);
+};
+el('race-top').onchange = e => { race.top = Number(e.target.value); renderRace(); };
+el('hourTable').onclick =() => { state.showHourTable = !state.showHourTable; render(); };
 el('onlyFinal').onchange = e => { state.onlyFinal = e.target.checked; renderTable(); };
 
 let resizeTimer;
